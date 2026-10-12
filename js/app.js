@@ -1,11 +1,13 @@
 /* =========================================================
    KPI 2027 – Khối IID : Logic ứng dụng
-   - Phân quyền 4 cấp: Admin, Manager, Leader, Staff
+   - Phân quyền 4 cấp nghiêm ngặt (Data Scoping & Privacy):
+     + Admin (Giám đốc Khối): Xem & quản trị toàn bộ
+     + Manager (Trưởng Bộ phận): Chỉ quản lý trong phạm vi Bộ phận của mình
+     + Leader (Trưởng nhóm): Quản lý nhóm & thành viên trực thuộc
+     + Staff (Nhân viên): Chỉ xem KPI của mình, bảng nhập liệu của mình,
+       review của mình và mục tiêu chung phòng ban để đóng góp
    - Tự động tổng hợp KPI (Auto Roll-up: Staff → Bộ phận → Khối)
    - Lưu trữ localStorage, xuất / nhập JSON
-   - Tính % hoàn thành, điểm KPI, xếp loại, kiểm tra quy tắc
-   - Các màn hình: Tổng quan, IID, Bộ phận, Cá nhân, Theo dõi tháng,
-     Review quý, Cây liên kết, Kiểm tra nguyên tắc, Quản lý phân quyền
    ========================================================= */
 (() => {
   'use strict';
@@ -72,7 +74,7 @@
     updateUserWidget();
   }
 
-  /* ---------- Phân quyền (RBAC) ---------- */
+  /* ---------- Phân quyền & Giới hạn dữ liệu (RBAC Data Scoping) ---------- */
   function curUser() {
     return S.users.find(u => u.id === S.currentUserId) || S.users[0] || {
       id: 'u_admin', name: 'Giám đốc Khối', role: 'admin', title: 'Giám đốc Khối'
@@ -81,7 +83,25 @@
   const roleOf = u => ROLES[u?.role] || ROLES.staff;
   const isAdm = () => curUser().role === 'admin';
   const isMgr = (deptId) => isAdm() || (curUser().role === 'manager' && (!deptId || curUser().deptId === deptId));
-  const isLead = (deptId) => isMgr(deptId) || (curUser().role === 'leader' && (!deptId || curUser().deptId === deptId));
+  const isStaff = () => curUser().role === 'staff';
+
+  // Lấy các Bộ phận được phép xem
+  function getVisibleDepts() {
+    const u = curUser();
+    if (u.role === 'admin') return S.depts;
+    if (u.deptId) return S.depts.filter(d => d.id === u.deptId);
+    return S.depts;
+  }
+
+  // Lấy danh sách Nhân sự được phép xem
+  function getVisibleEmps() {
+    const u = curUser();
+    if (u.role === 'admin') return S.emps;
+    if (u.role === 'manager') return S.emps.filter(e => e.deptId === u.deptId);
+    if (u.role === 'leader') return S.emps.filter(e => e.deptId === u.deptId);
+    if (u.role === 'staff') return S.emps.filter(e => e.id === u.empId); // Chỉ chính mình!
+    return [];
+  }
 
   function canManageIid() { return isAdm(); }
   function canManageDept(deptId) { return isAdm() || (curUser().role === 'manager' && curUser().deptId === deptId); }
@@ -99,14 +119,14 @@
   }
   function canInputMonthly(scope, eid, kid) {
     const k = container(scope, eid)?.find(x => x.id === kid);
-    if (k && k.rollupMode && k.rollupMode !== 'manual') return false; // KPI tự động tổng hợp thì không nhập tay
+    if (k && k.rollupMode && k.rollupMode !== 'manual') return false; // KPI tự động tổng hợp thì không sửa tay
     if (scope === 'iid') return isAdm();
     if (scope === 'dept') return canManageDept(eid);
     if (scope === 'emp') {
       if (isAdm()) return true;
       const e = empById(eid);
       if (!e) return false;
-      if (curUser().empId === eid) return true; // Bản thân nhân viên tự nhập
+      if (curUser().empId === eid) return true; // Nhân viên tự nhập số liệu của mình
       if (curUser().role === 'manager' && curUser().deptId === e.deptId) return true;
       if (curUser().role === 'leader' && curUser().deptId === e.deptId) return true;
     }
@@ -125,7 +145,7 @@
     }
     return false;
   }
-  function canFinalizeReview() { return isAdm() || curUser().role === 'manager'; }
+  function canFinalizeReview() { return isAdm(); }
 
   /* ---------- Auto Roll-up Engine ---------- */
   function computeRollups() {
@@ -253,17 +273,15 @@
     const issues = [], oks = [];
     const I = (level, scope, title, msg, nav) => issues.push({ level, scope, title, msg, nav });
     const fieldChecks = (k, sc, nav) => {
-      if (!(+k.target > 0)) I('err', sc, `KPI "${k.name}" chưa có mục tiêu hợp lệ`, 'Mục tiêu năm phải lớn hơn 0.', nav);
+      if (!(+k.target > 0) && k.rollupMode === 'manual') I('err', sc, `KPI "${k.name}" chưa có mục tiêu hợp lệ`, 'Mục tiêu năm phải lớn hơn 0.', nav);
       if (!(+k.weight > 0)) I('warn', sc, `KPI "${k.name}" có tỷ trọng 0%`, 'KPI không có tỷ trọng sẽ không được tính điểm.', nav);
-      if (!String(k.owner || '').trim()) I('warn', sc, `KPI "${k.name}" chưa có người phụ trách`, 'Mỗi KPI cần một người chịu trách nhiệm rõ ràng.', nav);
-      if (!String(k.source || '').trim()) I('warn', sc, `KPI "${k.name}" chưa có nguồn dữ liệu`, 'Cần xác định nguồn số liệu để đo lường khách quan.', nav);
     };
 
     // IID
     let n0 = issues.length;
     const iw = sum(S.iid.map(k => k.weight));
     const navIid = { view: 'iid' };
-    if (!S.iid.length) I('err', 'KPI Tổng IID', 'Chưa có KPI Tổng IID', 'Cần thiết lập KPI cấp Khối trước khi cascade.', navIid);
+    if (!S.iid.length) I('err', 'KPI Tổng IID', 'Chưa có KPI Tổng IID', 'Cần thiết lập KPI cấp Khối.', navIid);
     else if (Math.abs(iw - 100) > .01) I('err', 'KPI Tổng IID', 'Tổng tỷ trọng KPI IID phải bằng 100%', `Hiện tại: ${fmt(iw)}%.`, navIid);
     S.iid.forEach(k => fieldChecks(k, 'KPI Tổng IID', navIid));
     if (issues.length === n0) oks.push(['KPI Tổng IID', `${S.iid.length} KPI · tổng tỷ trọng 100%`]);
@@ -276,16 +294,9 @@
       const a = sum(d.iidLinks.map(l => l.weight)), b = sum(d.kpis.map(k => k.weight));
       if (!inRange(a, R.iid)) I('err', sc, `Tỷ trọng nhận từ KPI IID phải trong ${R.iid[0]}–${R.iid[1]}%`, `Hiện tại: ${fmt(a)}%.`, nav);
       if (!inRange(b, R.dept)) I('err', sc, `Tỷ trọng KPI riêng phải trong ${R.dept[0]}–${R.dept[1]}%`, `Hiện tại: ${fmt(b)}%.`, nav);
-      if (Math.abs(a + b - 100) > .01) I('err', sc, 'Tổng tỷ trọng phải bằng 100%', `Hiện tại: ${fmt(a + b)}% (IID ${fmt(a)}% + riêng ${fmt(b)}%).`, nav);
+      if (Math.abs(a + b - 100) > .01) I('err', sc, 'Tổng tỷ trọng phải bằng 100%', `Hiện tại: ${fmt(a + b)}%.`, nav);
       if (!inRange(d.kpis.length, R.deptKpiCount)) I('err', sc, `Số KPI riêng của bộ phận phải từ ${R.deptKpiCount[0]}–${R.deptKpiCount[1]}`, `Hiện có ${d.kpis.length} KPI.`, nav);
-      d.iidLinks.forEach(l => { if (!S.iid.some(k => k.id === l.kpiId)) I('err', sc, 'Liên kết tới KPI IID không tồn tại', 'Cập nhật lại phần "Liên kết KPI IID".', nav); });
-      d.kpis.forEach(k => {
-        if (!k.linkTo) I('warn', sc, `KPI "${k.name}" chưa liên kết lên KPI IID`, 'Mỗi KPI bộ phận nên đóng góp cho ít nhất một KPI Tổng IID.', nav);
-        else if (!S.iid.some(x => x.id === k.linkTo)) I('err', sc, `KPI "${k.name}" liên kết tới KPI IID không tồn tại`, 'Chọn lại KPI IID để liên kết.', nav);
-        fieldChecks(k, sc, nav);
-      });
-      const act = sum(d.kpis.filter(k => k.type === 'activity').map(k => k.weight));
-      if (b && act / b > .5) I('warn', sc, 'KPI hoạt động chiếm hơn 50% tỷ trọng KPI riêng', 'Nên ưu tiên KPI kết quả (outcome) thay vì KPI hoạt động.', nav);
+      d.kpis.forEach(k => fieldChecks(k, sc, nav));
       if (issues.length === n0) oks.push([sc, `IID ${fmt(a)}% · riêng ${fmt(b)}% · ${d.kpis.length} KPI`]);
     });
 
@@ -303,15 +314,7 @@
       if (!inRange(c, E.own)) I('err', sc, `Tỷ trọng KPI riêng phải trong ${E.own[0]}–${E.own[1]}%`, `Hiện tại: ${fmt(c)}%.`, nav);
       if (Math.abs(a + b + c - 100) > .01) I('err', sc, 'Tổng tỷ trọng phải bằng 100%', `Hiện tại: ${fmt(a + b + c)}%.`, nav);
       if (cnt > E.maxKpi) I('err', sc, `Tối đa ${E.maxKpi} KPI / cá nhân`, `Hiện có ${cnt} KPI.`, nav);
-      e.iidLinks.forEach(l => { if (!S.iid.some(k => k.id === l.kpiId)) I('err', sc, 'Liên kết tới KPI IID không tồn tại', 'Cập nhật lại liên kết.', nav); });
-      e.deptLinks.forEach(l => {
-        if (!d || !d.kpis.some(k => k.id === l.kpiId)) I('err', sc, 'KPI Bộ phận được nhận không thuộc bộ phận của nhân sự', 'Chỉ nhận KPI từ bộ phận mình trực thuộc.', nav);
-      });
-      e.kpis.forEach(k => {
-        if (!k.linkTo) I('warn', sc, `KPI "${k.name}" chưa liên kết lên KPI Bộ phận`, 'KPI cá nhân nên đóng góp cho KPI của bộ phận.', nav);
-        else if (!d || !d.kpis.some(x => x.id === k.linkTo)) I('err', sc, `KPI "${k.name}" liên kết tới KPI không thuộc bộ phận`, 'Chọn lại KPI bộ phận để liên kết.', nav);
-        fieldChecks(k, sc, nav);
-      });
+      e.kpis.forEach(k => fieldChecks(k, sc, nav));
       if (issues.length === n0) oks.push([sc, `IID ${fmt(a)}% · BP ${fmt(b)}% · riêng ${fmt(c)}% · ${cnt} KPI`]);
     });
 
@@ -328,7 +331,7 @@
     b.classList.toggle('ok', !r.errors);
   }
 
-  /* ---------- User Widget & Role Banner ---------- */
+  /* ---------- User Widget, Navigation Scoping & Role Banner ---------- */
   function updateUserWidget() {
     const u = curUser();
     const r = roleOf(u);
@@ -342,9 +345,35 @@
         banner.hidden = true;
       } else {
         banner.hidden = false;
-        $('#role-banner-text').innerHTML = `Đang xem với vai trò: <b>${esc(u.name)} (${r.badge})</b> – ${esc(u.title || '')}. Quyền hạn được áp dụng theo phân cấp.`;
+        $('#role-banner-text').innerHTML = `Đang xem với vai trò: <b>${esc(u.name)} (${r.badge})</b> – ${esc(u.title || '')}. Dữ liệu được tinh gọn theo đúng phạm vi trách nhiệm.`;
       }
     }
+
+    // 1. Phân quyền hiển thị Menu Sidebar
+    const navUsers = $('#nav-users');
+    if (navUsers) navUsers.style.display = isAdm() ? '' : 'none';
+
+    const navRules = $('#nav-rules');
+    if (navRules) navRules.style.display = (u.role === 'staff') ? 'none' : '';
+
+    const navEmps = $('#nav-emps');
+    if (navEmps) {
+      if (u.role === 'staff') navEmps.innerHTML = `<i>③</i>KPI của tôi`;
+      else if (u.role === 'manager') navEmps.innerHTML = `<i>③</i>KPI phòng ban`;
+      else navEmps.innerHTML = `<i>③</i>KPI Cá nhân`;
+    }
+
+    const navDepts = $('#nav-depts');
+    if (navDepts) {
+      if (u.role === 'staff') navDepts.innerHTML = `<i>②</i>Bộ phận của tôi`;
+      else navDepts.innerHTML = `<i>②</i>KPI Bộ phận`;
+    }
+
+    // 2. Phân quyền các nút thao tác hệ thống trên Topbar
+    const btnImport = $('#btn-import');
+    if (btnImport) btnImport.style.display = isAdm() ? '' : 'none';
+    const btnReset = $('#btn-reset');
+    if (btnReset) btnReset.style.display = isAdm() ? '' : 'none';
   }
 
   /* ---------- UI atoms ---------- */
@@ -458,23 +487,213 @@
   const linkName = id => { const f = findKpi(id); return f ? `<span class="tag ${f.level}">${esc(f.kpi.name)}</span>` : (id ? '<span class="tag bad">Không tồn tại</span>' : ''); };
 
   /* =========================================================
-     VIEWS
+     VIEWS TÙY BIẾN THEO VAI TRÒ
      ========================================================= */
   const VIEWS = {
-    dashboard: ['Tổng quan', 'KPI được triển khai xuyên suốt từ cấp Khối → Bộ phận → Cá nhân'],
-    iid: ['① KPI Tổng IID', 'Mục tiêu cấp Khối – điểm xuất phát của toàn bộ hệ thống KPI (Admin setup & điều phối)'],
-    depts: ['② KPI Bộ phận', 'Mỗi bộ phận nhận 30–70% từ KPI IID và tự xây dựng 3–5 KPI riêng (30–70%)'],
-    emps: ['③ KPI Cá nhân', 'Cá nhân: 20–40% KPI IID · 30–50% KPI Bộ phận · 20–40% KPI riêng · tối đa 8 KPI'],
-    tracking: ['Theo dõi hàng tháng', 'Nhập số liệu thực tế theo tháng & tự động Roll-up từ nhân viên lên bộ phận/khối'],
-    review: ['Review hàng quý', 'Tự đánh giá (Staff) → Quản lý review (Manager) → Chốt kết quả (Admin)'],
-    cascade: ['Cây liên kết KPI', 'Kiểm tra liên kết đa chiều: Cascade mục tiêu (Top-down) & Roll-up dữ liệu (Bottom-up)'],
-    rules: ['Kiểm tra nguyên tắc', 'Tự động rà soát tỷ trọng, số lượng KPI và liên kết theo quy định'],
-    users: ['Phân quyền & Người dùng', 'Quản lý tài khoản, vai trò (Admin, Manager, Leader, Staff) & phân cấp quản lý']
+    dashboard: ['Tổng quan', 'Bảng điều khiển theo dõi tiến độ mục tiêu'],
+    iid: ['① KPI Tổng IID', 'Mục tiêu cấp Khối – điểm xuất phát của toàn bộ hệ thống KPI'],
+    depts: ['② KPI Bộ phận', 'Mục tiêu cấp bộ phận & liên kết cascade'],
+    emps: ['③ KPI Cá nhân', 'Thiết lập & theo dõi mục tiêu cá nhân'],
+    tracking: ['Theo dõi hàng tháng', 'Nhập số liệu thực tế theo tháng & tự động Roll-up'],
+    review: ['Review hàng quý', 'Tự đánh giá → Quản lý review → Chốt kết quả theo quý'],
+    cascade: ['Cây liên kết KPI', 'Kiểm tra liên kết đa chiều: Cascade mục tiêu & Roll-up thực tế'],
+    rules: ['Kiểm tra nguyên tắc', 'Rà soát tỷ trọng, số lượng KPI và liên kết theo quy định'],
+    users: ['Phân quyền & Người dùng', 'Quản lý tài khoản, vai trò & phân cấp quản lý']
   };
 
-  /* ---------- Dashboard ---------- */
+  /* ---------- Dashboard Tùy biến theo Role ---------- */
   function viewDashboard() {
-    const P = ytd(), m = S.currentMonth;
+    const P = ytd(), m = S.currentMonth, curQ = qOf(m);
+    const u = curUser(), r = roleOf(u);
+
+    // ==========================================
+    // 1. GÓC NHÌN DÀNH CHO NHÂN VIÊN (STAFF)
+    // ==========================================
+    if (u.role === 'staff') {
+      const myEmp = empById(u.empId);
+      if (!myEmp) return `<div class="card empty">Chưa tìm thấy hồ sơ cá nhân liên kết với tài khoản này.</div>`;
+      const sEmp = empScore(myEmp, ...P);
+      const myDept = deptById(myEmp.deptId);
+      const sDept = myDept ? deptScore(myDept, ...P) : null;
+      const myItems = empItems(myEmp);
+      const myRev = S.reviews[reviewKey('emp', myEmp.id, curQ)] || { status: 'todo' };
+      const st = REVIEW_STATUS.find(x => x[0] === myRev.status) || REVIEW_STATUS[0];
+
+      return `
+      <section class="card hero">
+        <div>
+          <div class="row" style="margin-bottom:8px">
+            <span class="role-pill staff">👤 Nhân viên</span>
+            <span class="small muted">Xin chào, <b>${esc(myEmp.name)}</b> – ${esc(myEmp.title || '')} (${esc(myDept?.name || '')})</span>
+          </div>
+          <h2>Bảng theo dõi KPI <span>Cá nhân</span></h2>
+          <p>Chào mừng bạn! Dưới đây là tiến độ thực hiện mục tiêu năm 2027 của riêng bạn. Số liệu bạn cập nhật hàng tháng sẽ tự động đóng góp vào mục tiêu chung của ${esc(myDept?.name || 'phòng ban')}.</p>
+          <div class="row mt" style="flex-wrap:wrap">
+            <button class="btn" data-action="goto" data-view="tracking">▤ Nhập số liệu tháng ${MONTHS[m - 1]}</button>
+            <button class="btn ghost" data-action="review-edit" data-type="emp" data-eid="${myEmp.id}">★ Tự đánh giá Quý ${curQ}</button>
+          </div>
+        </div>
+        <div class="principles">
+          <div class="principle">
+            <span class="ic" style="background:rgba(47,214,131,.18)">🎯</span>
+            <div><b>Điểm KPI của bạn</b><br><span class="muted">${pctTxt(sEmp)} (${chip(sEmp)})</span></div>
+          </div>
+          <div class="principle">
+            <span class="ic" style="background:rgba(61,139,255,.18)">🏢</span>
+            <div><b>Tiến độ Bộ phận</b><br><span class="muted">${myDept ? myDept.name : '—'}: ${pctTxt(sDept)}</span></div>
+          </div>
+          <div class="principle">
+            <span class="ic" style="background:rgba(255,197,66,.18)">★</span>
+            <div><b>Review Quý ${curQ}</b><br><span class="tag ${st[2]}">${st[1]}</span></div>
+          </div>
+          <div class="principle">
+            <span class="ic" style="background:rgba(56,208,240,.18)">⚡</span>
+            <div><b>Đóng góp Roll-up</b><br><span class="muted">Tự động cộng dồn vào team</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid g-3 mt">
+        <div class="card stat">
+          <span class="glow" style="background:var(--teal)"></span>
+          <div class="label">Điểm KPI Cá nhân YTD</div>
+          <div class="value">${pctTxt(sEmp)}</div>
+          <div class="hint">Đến ${MONTHS[m - 1]} · ${chip(sEmp)}</div>
+        </div>
+        <div class="card stat">
+          <span class="glow" style="background:var(--blue)"></span>
+          <div class="label">Số KPI phụ trách</div>
+          <div class="value">${myItems.length}</div>
+          <div class="hint">${myEmp.kpis.length} KPI riêng · ${myEmp.iidLinks.length + myEmp.deptLinks.length} nhận từ cấp trên</div>
+        </div>
+        <div class="card stat">
+          <span class="glow" style="background:var(--sky)"></span>
+          <div class="label">Tiến độ Bộ phận (${esc(myDept?.name || '')})</div>
+          <div class="value">${pctTxt(sDept)}</div>
+          <div class="hint">Mục tiêu chung của team bạn</div>
+        </div>
+      </section>
+
+      <section class="card mt">
+        <div class="card-head">
+          <span class="section-num emp">3</span>
+          <h2>Tiến độ chi tiết từng KPI của bạn</h2>
+          <span class="tag">${MONTHS[0]} – ${MONTHS[m - 1]}</span>
+        </div>
+        <div class="kpi-list">
+          ${myItems.map(it => {
+            const k = it.kpi;
+            if (!k) return '';
+            const p = pctOf(k, ...P);
+            return `<div class="kpi-line">
+              <div class="row">
+                <div style="flex:1;min-width:0">
+                  <div class="kpi-name">${esc(k.name)} <span class="tag ${it.kind}">${it.kind === 'iid' ? 'Từ Khối' : (it.kind === 'dept' ? 'Từ Bộ phận' : 'KPI riêng')}</span></div>
+                  <div class="kpi-meta">Mục tiêu: <b>${fmt(k.target)} ${esc(k.unit)}</b> · Tỷ trọng: <b>${fmt(it.weight)}%</b> · Thực tế YTD: <b>${fmt(actualOf(k, ...P))}</b></div>
+                </div>
+                ${chip(p)}
+              </div>
+              <div class="mt-s">${pctBar(p)}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </section>`;
+    }
+
+    // ==========================================
+    // 2. GÓC NHÌN DÀNH CHO MANAGER (TRƯỞNG BỘ PHẬN)
+    // ==========================================
+    if (u.role === 'manager' && u.deptId) {
+      const myDept = deptById(u.deptId);
+      const sDept = myDept ? deptScore(myDept, ...P) : null;
+      const deptMembers = S.emps.filter(e => e.deptId === u.deptId);
+      const empRows = deptMembers.map(e => ({ e, s: empScore(e, ...P) })).sort((a, b) => b.s - a.s);
+
+      return `
+      <section class="card hero">
+        <div>
+          <div class="row" style="margin-bottom:8px">
+            <span class="role-pill manager">💼 Manager</span>
+            <span class="small muted">Xin chào, <b>${esc(u.name)}</b> – Trưởng ${esc(myDept?.name || 'Bộ phận')}</span>
+          </div>
+          <h2>Bảng điều hành <span>${esc(myDept?.name || 'Bộ phận')}</span></h2>
+          <p>Quản lý mục tiêu, tiến độ nhập số liệu và đánh giá KPI của toàn thể thành viên trong ${esc(myDept?.name || 'bộ phận')}.</p>
+          <div class="row mt" style="flex-wrap:wrap">
+            <button class="btn" data-action="goto" data-view="depts" data-dept="${myDept?.id}">② KPI Bộ phận</button>
+            <button class="btn ghost" data-action="goto" data-view="review">★ Đánh giá Quý ${curQ} cho team</button>
+          </div>
+        </div>
+        <div class="principles">
+          <div class="principle">
+            <span class="ic" style="background:rgba(61,139,255,.18)">📊</span>
+            <div><b>Điểm Bộ phận</b><br><span class="muted">${pctTxt(sDept)} (${chip(sDept)})</span></div>
+          </div>
+          <div class="principle">
+            <span class="ic" style="background:rgba(22,194,163,.18)">👥</span>
+            <div><b>Quy mô nhân sự</b><br><span class="muted">${deptMembers.length} thành viên trực thuộc</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid g-3 mt">
+        <div class="card stat">
+          <span class="glow" style="background:var(--blue)"></span>
+          <div class="label">Điểm KPI Bộ phận YTD</div>
+          <div class="value">${pctTxt(sDept)}</div>
+          <div class="hint">Đến ${MONTHS[m - 1]} · ${chip(sDept)}</div>
+        </div>
+        <div class="card stat">
+          <span class="glow" style="background:var(--teal)"></span>
+          <div class="label">KPI riêng của bộ phận</div>
+          <div class="value">${myDept ? myDept.kpis.length : 0}</div>
+          <div class="hint">Tự động Roll-up từ nhân sự</div>
+        </div>
+        <div class="card stat">
+          <span class="glow" style="background:var(--sky)"></span>
+          <div class="label">Nhân sự trong phòng</div>
+          <div class="value">${deptMembers.length}</div>
+          <div class="hint">Đang theo dõi và review</div>
+        </div>
+      </section>
+
+      <section class="grid g-2 mt">
+        <div class="card">
+          <div class="card-head">
+            <span class="section-num dept">2</span>
+            <h2>Tiến độ KPI ${esc(myDept?.name || '')}</h2>
+          </div>
+          <div class="kpi-list">
+            ${myDept ? myDept.kpis.map(k => {
+              const p = pctOf(k, ...P);
+              return `<div class="kpi-line">
+                <div class="row">
+                  <div style="flex:1;min-width:0"><div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div><div class="kpi-meta">Mục tiêu: ${fmt(k.target)} ${esc(k.unit)} · tỷ trọng ${fmt(k.weight)}%</div></div>
+                  ${chip(p)}
+                </div>
+                <div class="mt-s">${pctBar(p)}</div>
+              </div>`;
+            }).join('') : ''}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <span class="section-num emp">3</span>
+            <h2>Thành viên trong phòng ban</h2>
+          </div>
+          <div class="dept-list">
+            ${empRows.map(r => `<div class="row person" data-action="goto" data-view="emps" data-emp="${r.e.id}">
+              ${avatar(empInitials(r.e), empColor(r.e), 34)}
+              <div style="flex:1;min-width:0"><div class="kpi-name">${esc(r.e.name)}</div><div class="kpi-meta">${esc(r.e.title)}</div></div>
+              <b class="small">${pctTxt(r.s)}</b>${chip(r.s)}
+            </div>`).join('') || '<div class="empty">Chưa có nhân sự</div>'}
+          </div>
+        </div>
+      </section>`;
+    }
+
+    // ==========================================
+    // 3. GÓC NHÌN ADMIN (GIÁM ĐỐC KHỐI)
+    // ==========================================
     const sIid = iidScore(...P);
     const rr = checkRules();
     const deptKpiN = sum(S.depts.map(d => d.kpis.length));
@@ -504,15 +723,12 @@
         <b class="small">${pctTxt(r.s)}</b>${chip(r.s)}
       </div>`;
 
-    const curQ = qOf(m);
-    const u = curUser(), r = roleOf(u);
-
     return `
     <section class="card hero">
       <div>
         <div class="row" style="margin-bottom:8px">
-          <span class="role-pill ${r.id}">${r.badge}</span>
-          <span class="small muted">Xin chào, <b>${esc(u.name)}</b> (${esc(u.title || '')})</span>
+          <span class="role-pill admin">👑 Admin</span>
+          <span class="small muted">Giám đốc Khối IID – Toàn quyền quản trị hệ thống</span>
         </div>
         <h2>KPI 2027 – <span>Khối IID</span></h2>
         <p>Hệ thống tự động đồng bộ hai chiều: Admin thiết lập mục tiêu Khối (Top-down) và hệ thống tự động tổng hợp số liệu thực tế từ từng cá nhân & bộ phận (Bottom-up Rollup).</p>
@@ -612,9 +828,9 @@
       <div class="card">
         <div class="card-head"><h2>Cơ chế Setup & Roll-up KPI IID</h2></div>
         <div class="small muted" style="display:grid;gap:8px">
-          <div>• <b>Admin Setup</b>: Giám đốc Khối thiết lập mục tiêu lớn (Doanh thu, Lợi nhuận, NRR...) cho toàn khối.</div>
-          <div>• <b>⚡ Tự động Roll-up</b>: Nếu kích hoạt chế độ "Tự động tổng hợp", mục tiêu và số liệu thực tế sẽ được tự động cộng dồn từ các Bộ phận tương ứng.</div>
-          <div>• <b>Phân quyền</b>: ${canManage ? '<span class="tag good">Bạn có quyền Admin để chỉnh sửa</span>' : '<span class="tag warn">Chế độ Xem (Chỉ Admin mới có quyền sửa KPI Khối)</span>'}</div>
+          <div>• <b>Mục tiêu Khối</b>: Điểm xuất phát để toàn bộ khối và các phòng ban hướng tới.</div>
+          <div>• <b>⚡ Tự động Roll-up</b>: Tự động cộng dồn doanh số và các chỉ số từ các phòng ban.</div>
+          <div>• <b>Quyền hạn</b>: ${canManage ? '<span class="tag good">Bạn có quyền Admin để điều chỉnh mục tiêu khối</span>' : '<span class="tag">Chế độ xem định hướng chung</span>'}</div>
         </div>
       </div>
     </section>
@@ -636,7 +852,7 @@
     </section>`;
   }
 
-  /* ---------- KPI Bộ phận ---------- */
+  /* ---------- KPI Bộ phận (Chỉ hiển thị bộ phận liên quan) ---------- */
   function deptCard(d, P) {
     const s = deptScore(d, ...P);
     const a = sum(d.iidLinks.map(l => l.weight)), b = sum(d.kpis.map(k => k.weight));
@@ -649,19 +865,18 @@
   }
   function viewDepts() {
     const P = ytd();
-    if (!UI.selDept || !deptById(UI.selDept)) {
-      // Nếu là Manager, ưu tiên chọn đúng dept của mình
-      if (curUser().deptId && deptById(curUser().deptId)) UI.selDept = curUser().deptId;
-      else UI.selDept = S.depts[0]?.id || null;
+    const visibleDepts = getVisibleDepts();
+    if (!UI.selDept || !visibleDepts.some(d => d.id === UI.selDept)) {
+      UI.selDept = visibleDepts[0]?.id || null;
     }
     const d = deptById(UI.selDept);
-    let detail = '<div class="card mt empty">Chưa có bộ phận nào.</div>';
+    let detail = '<div class="card mt empty">Chưa có thông tin bộ phận.</div>';
     if (d) {
       const canManage = canManageDept(d.id);
       const a = sum(d.iidLinks.map(l => l.weight)), b = sum(d.kpis.map(k => k.weight));
       const items = deptItems(d);
       const groups = [
-        { title: 'Nhận từ KPI Tổng IID', cls: 'iid', tag: 'IID', items: items.filter(i => i.kind === 'iid').map(i => ({ ...i, actions: `<button class="icon-btn" title="Sửa liên kết" data-action="dept-links" data-eid="${d.id}">⚙</button>` })) },
+        { title: 'Nhận từ KPI Tổng IID', cls: 'iid', tag: 'IID', items: items.filter(i => i.kind === 'iid').map(i => ({ ...i, actions: canManage ? `<button class="icon-btn" title="Sửa liên kết" data-action="dept-links" data-eid="${d.id}">⚙</button>` : '' })) },
         { title: 'KPI riêng của bộ phận', cls: 'dept', tag: 'Bộ phận', items: d.kpis.map(k => ({ kind: 'own', kpi: k, weight: k.weight, link: linkName(k.linkTo), actions: kpiActions('dept', d.id, k.id) })) }
       ];
       const members = S.emps.filter(e => e.deptId === d.id);
@@ -676,7 +891,7 @@
             <button class="btn ghost sm" data-action="dept-links" data-eid="${d.id}">⚙ Liên kết KPI IID</button>
             <button class="btn sm" data-action="add-kpi" data-scope="dept" data-eid="${d.id}">＋ KPI bộ phận</button>
             ${isAdm() ? `<button class="btn ghost sm danger-hover" data-action="del-dept" data-eid="${d.id}">🗑</button>` : ''}
-          ` : '<span class="tag">Chế độ xem</span>'}
+          ` : '<span class="tag">Mục tiêu chung phòng ban</span>'}
         </div>
         <div class="grid g-4">
           ${weightStat('Nhận từ KPI IID', a, RULES.dept.iid)}
@@ -685,19 +900,22 @@
           ${weightStat('Tổng tỷ trọng', a + b, null)}
         </div>
         <div class="mt">${itemsTable(groups, P, 'dept', d.id)}</div>
-        <div class="row mt" style="flex-wrap:wrap;gap:8px"><span class="small muted">Nhân sự:</span>
+        <div class="row mt" style="flex-wrap:wrap;gap:8px"><span class="small muted">Nhân sự trong phòng:</span>
           ${members.map(e => `<button class="tag emp" data-action="goto" data-view="emps" data-emp="${e.id}">${esc(e.name)} · ${pctTxt(empScore(e, ...P))}</button>`).join('') || '<span class="small muted">Chưa có</span>'}
         </div>
       </section>`;
     }
     return `
-    <div class="row" style="margin-bottom:16px"><span class="muted small">Chọn bộ phận để xem & quản trị</span><span class="spacer"></span>
-      ${isAdm() ? '<button class="btn" data-action="add-dept" id="btn-add-dept">＋ Thêm bộ phận</button>' : ''}</div>
-    <section class="grid g-4">${S.depts.map(x => deptCard(x, P)).join('')}</section>
+    <div class="row" style="margin-bottom:16px">
+      <span class="muted small">${isAdm() ? 'Danh sách các bộ phận trong Khối IID' : 'Bộ phận của bạn'}</span>
+      <span class="spacer"></span>
+      ${isAdm() ? '<button class="btn" data-action="add-dept" id="btn-add-dept">＋ Thêm bộ phận</button>' : ''}
+    </div>
+    <section class="grid ${visibleDepts.length > 2 ? 'g-4' : 'g-2'}">${visibleDepts.map(x => deptCard(x, P)).join('')}</section>
     ${detail}`;
   }
 
-  /* ---------- KPI Cá nhân ---------- */
+  /* ---------- KPI Cá nhân (Staff chỉ xem chính mình) ---------- */
   function empCard(e, P) {
     const s = empScore(e, ...P), color = empColor(e);
     const a = sum(e.iidLinks.map(l => l.weight)), b = sum(e.deptLinks.map(l => l.weight)), c = sum(e.kpis.map(k => k.weight));
@@ -713,21 +931,19 @@
   }
   function viewEmps() {
     const P = ytd();
-    let list = S.emps.filter(e => UI.empFilter === 'all' || e.deptId === UI.empFilter);
-    // Nếu là Staff, ưu tiên chọn chính mình
-    if (!UI.selEmp || !list.some(e => e.id === UI.selEmp)) {
-      if (curUser().empId && list.some(e => e.id === curUser().empId)) UI.selEmp = curUser().empId;
-      else UI.selEmp = list[0]?.id || null;
+    const visibleEmps = getVisibleEmps();
+    if (!UI.selEmp || !visibleEmps.some(e => e.id === UI.selEmp)) {
+      UI.selEmp = visibleEmps[0]?.id || null;
     }
     const e = empById(UI.selEmp);
-    let detail = '<div class="card mt empty">Không có nhân sự trong bộ lọc này.</div>';
+    let detail = '<div class="card mt empty">Không có dữ liệu nhân sự.</div>';
     if (e) {
       const canManage = canManageEmp(e.id);
       const d = deptById(e.deptId);
       const a = sum(e.iidLinks.map(l => l.weight)), b = sum(e.deptLinks.map(l => l.weight)), c = sum(e.kpis.map(k => k.weight));
       const cnt = e.iidLinks.length + e.deptLinks.length + e.kpis.length;
       const items = empItems(e);
-      const linkBtn = `<button class="icon-btn" title="Sửa liên kết" data-action="emp-links" data-eid="${e.id}">⚙</button>`;
+      const linkBtn = canManage ? `<button class="icon-btn" title="Sửa liên kết" data-action="emp-links" data-eid="${e.id}">⚙</button>` : '';
       const groups = [
         { title: 'Nhận từ KPI Tổng IID', cls: 'iid', tag: 'IID', items: items.filter(i => i.kind === 'iid').map(i => ({ ...i, actions: linkBtn })) },
         { title: 'Nhận từ KPI Bộ phận', cls: 'dept', tag: 'Bộ phận', items: items.filter(i => i.kind === 'dept').map(i => ({ ...i, actions: linkBtn })) },
@@ -740,10 +956,10 @@
           <div><h2 style="font-size:17px">${esc(e.name)}</h2><div class="small muted">${esc(e.title || '—')} · ${esc(d?.name || 'Chưa có bộ phận')} · <span class="role-pill ${e.role || 'staff'}">${ROLES[e.role || 'staff']?.badge}</span></div></div>
           <span class="spacer"></span>
           ${canManage ? `
-            <button class="btn ghost sm" data-action="edit-emp" data-eid="${e.id}">✎ Sửa</button>
+            <button class="btn ghost sm" data-action="edit-emp" data-eid="${e.id}">✎ Sửa thông tin</button>
             <button class="btn ghost sm" data-action="emp-links" data-eid="${e.id}">⚙ Liên kết KPI</button>
             <button class="btn sm" data-action="add-kpi" data-scope="emp" data-eid="${e.id}">＋ KPI cá nhân</button>
-            ${isAdm() || isMgr(e.deptId) ? `<button class="btn ghost sm danger-hover" data-action="del-emp" data-eid="${e.id}">🗑</button>` : ''}
+            ${isAdm() ? `<button class="btn ghost sm danger-hover" data-action="del-emp" data-eid="${e.id}">🗑</button>` : ''}
           ` : '<span class="tag">Chế độ xem</span>'}
         </div>
         <div class="grid g-4">
@@ -755,24 +971,54 @@
         <div class="mt">${itemsTable(groups, P, 'emp', e.id)}</div>
       </section>`;
     }
-    const tabs = [['all', 'Tất cả'], ...S.depts.map(x => [x.id, x.name])]
-      .map(([v, l]) => `<button class="${UI.empFilter === v ? 'active' : ''}" data-action="emp-filter" data-val="${v}">${esc(l)}</button>`).join('');
+
+    // Nếu là Staff: không hiển thị danh sách hay tabs, chỉ hiện duy nhất KPI của mình
+    if (isStaff()) {
+      return detail;
+    }
+
+    const tabs = isAdm()
+      ? [['all', 'Tất cả'], ...S.depts.map(x => [x.id, x.name])].map(([v, l]) => `<button class="${UI.empFilter === v ? 'active' : ''}" data-action="emp-filter" data-val="${v}">${esc(l)}</button>`).join('')
+      : '';
+
     return `
-    <div class="row" style="margin-bottom:16px;flex-wrap:wrap"><div class="tabs">${tabs}</div><span class="spacer"></span>
-      ${isAdm() || curUser().role === 'manager' ? '<button class="btn" data-action="add-emp" id="btn-add-emp">＋ Thêm nhân sự</button>' : ''}</div>
-    <section class="grid g-4">${list.map(x => empCard(x, P)).join('')}</section>
+    <div class="row" style="margin-bottom:16px;flex-wrap:wrap">
+      ${tabs ? `<div class="tabs">${tabs}</div>` : `<span class="small muted">Danh sách nhân sự thuộc ${esc(deptById(curUser().deptId)?.name || 'đơn vị')}</span>`}
+      <span class="spacer"></span>
+      ${isAdm() || curUser().role === 'manager' ? '<button class="btn" data-action="add-emp" id="btn-add-emp">＋ Thêm nhân sự</button>' : ''}
+    </div>
+    <section class="grid g-4">${visibleEmps.map(x => empCard(x, P)).join('')}</section>
     ${detail}`;
   }
 
-  /* ---------- Theo dõi hàng tháng (Tracking & Rollup) ---------- */
+  /* ---------- Theo dõi hàng tháng (Tracking Scoped) ---------- */
   function trackTarget() {
+    const u = curUser();
+    // 1. Staff: khóa chết ở cá nhân mình
+    if (u.role === 'staff') {
+      const e = empById(u.empId);
+      return e ? { scope: 'emp', eid: e.id, kpis: e.kpis, items: empItems(e), name: `Cá nhân: ${e.name}` } : null;
+    }
+    // 2. Manager: chỉ có IID, Bộ phận mình hoặc nhân sự thuộc bộ phận mình
+    if (u.role === 'manager') {
+      if (UI.trackLevel === 'iid') return { scope: 'iid', eid: '', kpis: S.iid, items: iidItems(), name: 'KPI Tổng IID (Xem)' };
+      if (UI.trackLevel === 'dept') {
+        const d = deptById(u.deptId);
+        return d ? { scope: 'dept', eid: d.id, kpis: d.kpis, items: deptItems(d), name: d.name } : null;
+      }
+      const myEmps = S.emps.filter(e => e.deptId === u.deptId);
+      if (!myEmps.some(e => e.id === UI.trackEmp)) UI.trackEmp = myEmps[0]?.id;
+      const e = empById(UI.trackEmp);
+      return e ? { scope: 'emp', eid: e.id, kpis: e.kpis, items: empItems(e), name: e.name } : null;
+    }
+    // 3. Admin: toàn quyền
     if (UI.trackLevel === 'iid') return { scope: 'iid', eid: '', kpis: S.iid, items: iidItems(), name: 'KPI Tổng IID' };
     if (UI.trackLevel === 'dept') {
-      if (!deptById(UI.trackDept)) UI.trackDept = curUser().deptId || S.depts[0]?.id;
+      if (!deptById(UI.trackDept)) UI.trackDept = S.depts[0]?.id;
       const d = deptById(UI.trackDept);
       return d ? { scope: 'dept', eid: d.id, kpis: d.kpis, items: deptItems(d), name: d.name } : null;
     }
-    if (!empById(UI.trackEmp)) UI.trackEmp = curUser().empId || S.emps[0]?.id;
+    if (!empById(UI.trackEmp)) UI.trackEmp = S.emps[0]?.id;
     const e = empById(UI.trackEmp);
     return e ? { scope: 'emp', eid: e.id, kpis: e.kpis, items: empItems(e), name: e.name } : null;
   }
@@ -782,8 +1028,8 @@
     T.kpis.forEach(k => { for (let m = 0; m < S.currentMonth; m++) { need++; if (isNum(k.monthly[m])) filled++; } });
     const comp = need ? filled / need * 100 : 0;
     return `<div class="row" style="gap:18px">${ring(s, true)}
-      <div style="flex:1"><div class="kpi-name">${esc(T.name)}</div><div class="small muted">Điểm tổng hợp YTD (bao gồm cả các chỉ số nhận từ cấp trên & tự động Roll-up)</div><div class="mt-s">${chip(s)}</div></div>
-      <div style="min-width:220px"><div class="row small"><span class="muted">Mức độ cập nhật số liệu đến ${MONTHS[S.currentMonth - 1]}</span><span class="spacer"></span><b>${fmt(comp, 0)}%</b></div>
+      <div style="flex:1"><div class="kpi-name">${esc(T.name)}</div><div class="small muted">Điểm tổng hợp YTD (bao gồm cả các chỉ số liên kết & tự động Roll-up)</div><div class="mt-s">${chip(s)}</div></div>
+      <div style="min-width:220px"><div class="row small"><span class="muted">Số liệu cập nhật đến ${MONTHS[S.currentMonth - 1]}</span><span class="spacer"></span><b>${fmt(comp, 0)}%</b></div>
       <div class="bar lg mt-s"><span style="width:${comp}%"></span></div><div class="small muted mt-s">${filled}/${need} ô dữ liệu đã nhập</div></div>
     </div>`;
   }
@@ -792,26 +1038,63 @@
     return { ytd: `${fmt(actualOf(k, ...P))}<div class="kpi-meta">MT kỳ: ${fmt(targetOf(k, ...P))}</div>`, pct: pctBar(p) };
   }
   function viewTracking() {
-    // Nếu là Staff, khóa mặc định xem cá nhân mình
-    if (curUser().role === 'staff' && curUser().empId) {
-      UI.trackLevel = 'emp';
-      UI.trackEmp = curUser().empId;
+    const u = curUser();
+
+    // STAFF: Chỉ hiển thị bảng của chính mình!
+    if (u.role === 'staff') {
+      const T = trackTarget();
+      if (!T) return `<div class="card empty">Chưa tìm thấy dữ liệu cá nhân.</div>`;
+      const rows = T.kpis.map(k => {
+        const c = trackRowCells(k);
+        const cells = k.monthly.map((v, m) =>
+          `<td><input type="text" inputmode="decimal" class="cell-input ${isNum(v) ? 'filled' : ''} ${m >= S.currentMonth ? 'future' : ''}" value="${isNum(v) ? v : ''}" data-scope="${T.scope}" data-eid="${T.eid}" data-kid="${k.id}" data-m="${m}" aria-label="${esc(k.name)} ${MONTHS[m]}"/></td>`
+        ).join('');
+        return `<tr data-kid="${k.id}">
+          <td class="sticky-col"><div class="kpi-name">${esc(k.name)}</div><div class="kpi-meta">${esc(k.unit)} · ${AGGREGATIONS[k.aggregation]} · ${k.direction === 'down' ? '↓' : '↑'}</div></td>
+          <td class="num">${fmt(k.target)}</td>${cells}
+          <td class="num ytd">${c.ytd}</td><td class="pct" style="min-width:140px">${c.pct}</td></tr>`;
+      }).join('');
+
+      return `
+      <section class="card" id="track-summary">${trackSummary(T)}</section>
+      <section class="card mt">
+        <div class="card-head">
+          <h2>Nhập số liệu thực tế hàng tháng của bạn</h2>
+          <span class="tag">Năm ${S.year || 2027}</span>
+        </div>
+        <div class="table-wrap"><table class="track-table">
+          <thead><tr><th class="sticky-col">KPI</th><th class="num">MT năm</th>${MONTHS.map((m, i) => `<th class="num ${i + 1 === S.currentMonth ? 'cur-month' : ''}">${m}</th>`).join('')}<th class="num">Thực tế YTD</th><th>% hoàn thành</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="16" class="empty">Chưa có KPI riêng</td></tr>`}</tbody>
+        </table></div>
+        <div class="small muted mt-s">💡 Nhập số liệu thực tế tháng vào ô tương ứng, hệ thống sẽ tự động tính lũy kế và đồng bộ lên phòng ban.</div>
+      </section>`;
     }
 
-    const tabs = [['iid', '① KPI Tổng IID'], ['dept', '② Bộ phận'], ['emp', '③ Cá nhân']]
-      .map(([v, l]) => `<button class="${UI.trackLevel === v ? 'active' : ''}" data-action="track-level" data-val="${v}">${l}</button>`).join('');
-    let picker = '';
-    if (UI.trackLevel === 'dept') picker = `<select id="track-entity">${S.depts.map(d => `<option value="${d.id}" ${d.id === UI.trackDept ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select>`;
-    if (UI.trackLevel === 'emp') picker = `<select id="track-entity">${S.depts.map(d => `<optgroup label="${esc(d.name)}">${S.emps.filter(e => e.deptId === d.id).map(e => `<option value="${e.id}" ${e.id === UI.trackEmp ? 'selected' : ''}>${esc(e.name)} (${e.title})</option>`).join('')}</optgroup>`).join('')}</select>`;
-    const T = trackTarget();
+    // MANAGER / ADMIN:
+    let tabs = '';
+    if (isAdm()) {
+      tabs = [['iid', '① KPI Tổng IID'], ['dept', '② Bộ phận'], ['emp', '③ Cá nhân']]
+        .map(([v, l]) => `<button class="${UI.trackLevel === v ? 'active' : ''}" data-action="track-level" data-val="${v}">${l}</button>`).join('');
+    } else {
+      tabs = [['dept', '② Bộ phận của tôi'], ['emp', '③ Nhân sự trong phòng']]
+        .map(([v, l]) => `<button class="${UI.trackLevel === v ? 'active' : ''}" data-action="track-level" data-val="${v}">${l}</button>`).join('');
+    }
 
+    let picker = '';
+    if (UI.trackLevel === 'dept' && isAdm()) {
+      picker = `<select id="track-entity">${S.depts.map(d => `<option value="${d.id}" ${d.id === UI.trackDept ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select>`;
+    } else if (UI.trackLevel === 'emp') {
+      const myEmps = isAdm() ? S.emps : S.emps.filter(e => e.deptId === u.deptId);
+      picker = `<select id="track-entity">${myEmps.map(e => `<option value="${e.id}" ${e.id === UI.trackEmp ? 'selected' : ''}>${esc(e.name)} (${e.title})</option>`).join('')}</select>`;
+    }
+
+    const T = trackTarget();
     let body = '<div class="card mt empty">Không có dữ liệu.</div>';
     if (T) {
       const rows = T.kpis.map(k => {
         const c = trackRowCells(k);
         const isRollup = k.rollupMode && k.rollupMode !== 'manual';
         const canInput = canInputMonthly(T.scope, T.eid, k.id);
-
         const cells = k.monthly.map((v, m) => {
           if (isRollup) {
             return `<td><input type="text" class="cell-input rollup-locked ${isNum(v) ? 'filled' : ''}" value="${isNum(v) ? v : ''}" readonly title="⚡ Số liệu tự động tổng hợp từ cấp dưới" /></td>`;
@@ -836,11 +1119,6 @@
           <thead><tr><th class="sticky-col">KPI</th><th class="num">MT năm</th>${MONTHS.map((m, i) => `<th class="num ${i + 1 === S.currentMonth ? 'cur-month' : ''}">${m}</th>`).join('')}<th class="num">Thực tế YTD</th><th>% hoàn thành</th></tr></thead>
           <tbody>${rows || `<tr><td colspan="16" class="empty">Chưa có KPI riêng ở cấp này</td></tr>`}</tbody>
         </table></div>
-        <div class="small muted mt-s">
-          💡 <b>Cơ chế nhập liệu:</b>
-          • Ô màu xanh có biểu tượng <b>⚡ Roll-up</b> được tự động tổng hợp trực tiếp từ các cấp dưới (nhân viên hoặc bộ phận).
-          • Bạn nhập số liệu cá nhân → KPI bộ phận và KPI Khối IID sẽ tự động nhảy số theo thời gian thực.
-        </div>
       </section>`;
     }
     return `<div class="row" style="flex-wrap:wrap"><div class="tabs">${tabs}</div>${picker}</div>${body}`;
@@ -856,7 +1134,6 @@
     k.monthly[+m] = v;
     inp.classList.toggle('filled', v !== null);
 
-    // Tính toán lại toàn bộ Roll-up tự động
     computeRollups();
     save();
 
@@ -869,25 +1146,42 @@
     if (T && box) box.innerHTML = trackSummary(T);
   }
 
-  /* ---------- Review hàng quý ---------- */
+  /* ---------- Review hàng quý (Scoped per Role) ---------- */
   const reviewKey = (type, id, q) => `${type}_${id}_Q${q}`;
   const getReview = (type, id, q) => S.reviews[reviewKey(type, id, q)] || { status: 'todo', self: '', mgr: '', plan: '', adjust: '' };
   const statusIdx = s => REVIEW_STATUS.findIndex(x => x[0] === s);
   function viewReview() {
     if (!UI.reviewQ) UI.reviewQ = qOf(S.currentMonth);
     const q = UI.reviewQ, Q = QUARTERS[q - 1], R = qRange(q), started = Q.from <= S.currentMonth;
-    const ents = [
-      ...S.depts.map(d => ({ type: 'dept', id: d.id, name: d.name, sub: 'Trưởng BP: ' + (d.leader || '—'), av: avatar(deptInitials(d), d.color, 34), score: started ? deptScore(d, ...R) : null, prev: q > 1 ? deptScore(d, ...qRange(q - 1)) : null })),
-      ...S.emps.map(e => ({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: q > 1 ? empScore(e, ...qRange(q - 1)) : null }))
-    ];
-    const shown = ents.filter(x => UI.reviewFilter === 'all' || x.type === UI.reviewFilter);
+    const u = curUser();
 
+    // 1. Phân loại danh sách hiển thị theo quyền
+    let ents = [];
+    if (u.role === 'staff') {
+      const e = empById(u.empId);
+      if (e) ents = [{ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: q > 1 ? empScore(e, ...qRange(q - 1)) : null }];
+    } else if (u.role === 'manager') {
+      const d = deptById(u.deptId);
+      if (d) ents.push({ type: 'dept', id: d.id, name: d.name, sub: 'Trưởng BP: ' + (d.leader || '—'), av: avatar(deptInitials(d), d.color, 34), score: started ? deptScore(d, ...R) : null, prev: q > 1 ? deptScore(d, ...qRange(q - 1)) : null });
+      S.emps.filter(e => e.deptId === u.deptId).forEach(e => {
+        ents.push({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: q > 1 ? empScore(e, ...qRange(q - 1)) : null });
+      });
+    } else {
+      // Admin: Toàn bộ
+      ents = [
+        ...S.depts.map(d => ({ type: 'dept', id: d.id, name: d.name, sub: 'Trưởng BP: ' + (d.leader || '—'), av: avatar(deptInitials(d), d.color, 34), score: started ? deptScore(d, ...R) : null, prev: q > 1 ? deptScore(d, ...qRange(q - 1)) : null })),
+        ...S.emps.map(e => ({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: q > 1 ? empScore(e, ...qRange(q - 1)) : null }))
+      ];
+    }
+
+    const shown = (u.role === 'staff') ? ents : ents.filter(x => UI.reviewFilter === 'all' || x.type === UI.reviewFilter);
     const finalCode = (x, r) => r.adjust || rating(x.score).code;
     const rows = shown.map(x => {
       const r = getReview(x.type, x.id, q), st = REVIEW_STATUS[Math.max(0, statusIdx(r.status))];
       const fc = finalCode(x, r);
       const delta = x.score !== null && x.prev !== null && q > 1 ? x.score - x.prev : null;
       const trend = delta === null ? '<span class="muted">–</span>' : `<span style="color:${delta >= 0 ? 'var(--green)' : 'var(--red)'}">${delta >= 0 ? '▲' : '▼'} ${fmt(Math.abs(delta), 1)}</span>`;
+      const btnText = (u.role === 'staff') ? '★ Tự đánh giá' : (u.role === 'manager' && x.type === 'emp' ? '★ Quản lý Review' : '★ Đánh giá');
       return `<tr>
         <td><div class="row">${x.av}<div><div class="kpi-name">${esc(x.name)}</div><div class="kpi-meta">${esc(x.sub)}</div></div></div></td>
         <td><span class="tag ${x.type}">${x.type === 'dept' ? 'Bộ phận' : 'Cá nhân'}</span></td>
@@ -896,32 +1190,20 @@
         <td>${chip(x.score)}</td>
         <td>${fc === 'NA' ? '<span class="muted">–</span>' : `<span class="chip r-${fc}">${fc}${r.adjust ? ' · điều chỉnh' : ''}</span>`}</td>
         <td><span class="tag ${st[2]}">${st[1]}</span></td>
-        <td class="num"><button class="btn ghost sm" data-action="review-edit" data-type="${x.type}" data-eid="${x.id}" ${started ? '' : 'disabled'}>★ Đánh giá</button></td>
+        <td class="num"><button class="btn ghost sm" data-action="review-edit" data-type="${x.type}" data-eid="${x.id}" ${started ? '' : 'disabled'}>${btnText}</button></td>
       </tr>`;
     }).join('');
 
     const qTabs = QUARTERS.map(x => `<button class="${x.q === q ? 'active' : ''}" data-action="review-q" data-val="${x.q}">Quý ${x.q}</button>`).join('');
-    const fTabs = [['all', 'Tất cả'], ['dept', 'Bộ phận'], ['emp', 'Cá nhân']].map(([v, l]) => `<button class="${UI.reviewFilter === v ? 'active' : ''}" data-action="review-filter" data-val="${v}">${l}</button>`).join('');
-    const sIid = started ? iidScore(...R) : null;
+    const fTabs = (u.role === 'staff') ? '' : [['all', 'Tất cả'], ['dept', 'Bộ phận'], ['emp', 'Cá nhân']].map(([v, l]) => `<button class="${UI.reviewFilter === v ? 'active' : ''}" data-action="review-filter" data-val="${v}">${l}</button>`).join('');
 
     return `
-    <div class="row" style="flex-wrap:wrap"><div class="tabs">${qTabs}</div><span class="spacer"></span><div class="tabs">${fTabs}</div></div>
-    <section class="grid g-12 mt">
-      <div class="card">
-        <div class="card-head"><span class="section-num">Q${q}</span><h2>KPI Tổng IID – Quý ${q}</h2></div>
-        <div class="row" style="gap:18px">${ring(sIid, true)}<div><div class="small muted">${MONTHS[Q.from - 1]} – ${MONTHS[Q.to - 1]}${started && R[1] < Q.to ? ` (số liệu đến ${MONTHS[R[1] - 1]})` : ''}</div><div class="mt-s">${chip(sIid)}</div></div></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>Quy trình Review 4 cấp</h2></div>
-        <div class="small muted" style="display:grid;gap:6px">
-          <div>1. <b>Nhân viên (Staff)</b>: Tự đánh giá kết quả & khó khăn cá nhân.</div>
-          <div>2. <b>Trưởng bộ phận (Manager)</b>: Ghi nhận xét, điều chỉnh xếp loại và phản hồi.</div>
-          <div>3. <b>Giám đốc Khối (Admin)</b>: Phê duyệt và chốt kết quả toàn khối.</div>
-        </div>
-      </div>
-    </section>
+    <div class="row" style="flex-wrap:wrap"><div class="tabs">${qTabs}</div><span class="spacer"></span>${fTabs ? `<div class="tabs">${fTabs}</div>` : ''}</div>
     <section class="card mt">
-      <div class="card-head"><h2>Kết quả đánh giá Quý ${q}</h2><span class="tag">${shown.length} đối tượng</span></div>
+      <div class="card-head">
+        <h2>${u.role === 'staff' ? `Đánh giá Quý ${q} của bạn` : `Kết quả đánh giá Quý ${q}`}</h2>
+        <span class="tag">${shown.length} đối tượng</span>
+      </div>
       <div class="table-wrap"><table>
         <thead><tr><th>Đối tượng</th><th>Cấp</th><th class="num">Điểm quý</th><th class="num">So quý trước</th><th>Xếp loại theo điểm</th><th>Xếp loại cuối</th><th>Trạng thái</th><th></th></tr></thead>
         <tbody>${rows || '<tr><td colspan="8" class="empty">Không có dữ liệu</td></tr>'}</tbody>
@@ -949,7 +1231,7 @@
         <div class="row">${ring(score)}<div><b>Điểm tự động: ${pctTxt(score)}</b><div class="mt-s">${chip(score)}</div></div></div>
         <div class="mt">${breakdown || '<span class="muted">Chưa có KPI</span>'}</div>
       </div>
-      <div class="field full"><label for="rv-self">Tự đánh giá (Nhân sự / Trưởng bộ phận điền) ${canSelf ? '' : '<span class="tag">Chỉ đọc</span>'}</label>
+      <div class="field full"><label for="rv-self">Tự đánh giá (Nhân sự tự điền) ${canSelf ? '' : '<span class="tag">Chỉ đọc</span>'}</label>
         <textarea id="rv-self" name="self" ${canSelf ? '' : 'readonly'}>${esc(r.self)}</textarea></div>
       <div class="field full"><label for="rv-mgr">Nhận xét của quản lý ${canMgr ? '' : '<span class="tag">Chỉ đọc</span>'}</label>
         <textarea id="rv-mgr" name="mgr" ${canMgr ? '' : 'readonly'}>${esc(r.mgr)}</textarea></div>
@@ -985,21 +1267,23 @@
     });
   }
 
-  /* ---------- Cây liên kết KPI (Cascade & Rollup) ---------- */
+  /* ---------- Cây liên kết KPI ---------- */
   function viewCascade() {
     const P = ytd();
     const pct = k => { const p = pctOf(k, ...P); return `<b class="small" style="color:${RATING_COLOR[rating(p).code]}">${pctTxt(p)}</b>`; };
     const leaf = (cls, tag, name, extra) => `<div class="tree-node"><div class="tn-head"><span class="tag ${cls}">${tag}</span><span style="flex:1">${name}</span>${extra || ''}</div></div>`;
 
+    const visibleDepts = getVisibleDepts();
     const iidNodes = S.iid.map(k => {
       const kids = [];
-      S.depts.forEach(d => {
+      visibleDepts.forEach(d => {
         const l = d.iidLinks.find(x => x.kpiId === k.id);
         if (l) kids.push(leaf('dept', 'BP nhận trực tiếp', `<b>${esc(d.name)}</b>`, `<span class="tag">${fmt(l.weight)}%</span>`));
       });
-      S.depts.forEach(d => d.kpis.filter(dk => dk.linkTo === k.id).forEach(dk => {
+      visibleDepts.forEach(d => d.kpis.filter(dk => dk.linkTo === k.id).forEach(dk => {
         const sub = [];
-        S.emps.filter(e => e.deptId === d.id).forEach(e => {
+        const visibleEmps = getVisibleEmps().filter(e => e.deptId === d.id);
+        visibleEmps.forEach(e => {
           const l = e.deptLinks.find(x => x.kpiId === dk.id);
           if (l) sub.push(leaf('emp', 'CN nhận trực tiếp', `<b>${esc(e.name)}</b> <span class="muted small">${esc(e.title)}</span>`, `<span class="tag">${fmt(l.weight)}%</span>`));
           e.kpis.filter(ek => ek.linkTo === dk.id).forEach(ek => sub.push(leaf('emp', 'KPI cá nhân', `${esc(ek.name)} <span class="muted small">– ${esc(e.name)}</span>`, `<span class="tag">${fmt(ek.weight)}%</span>${pct(ek)}`)));
@@ -1007,12 +1291,8 @@
         kids.push(`<div class="tree-node ${sub.length ? 'open' : ''}"><div class="tn-head" data-action="toggle"><span class="caret">${sub.length ? '▶' : '•'}</span><span class="tag dept">KPI bộ phận</span><span style="flex:1">${esc(dk.name)} ${rollupBadge(dk)} <span class="muted small">– ${esc(d.name)}</span></span><span class="tag">${fmt(dk.weight)}%</span>${pct(dk)}<span class="tag ${sub.length ? 'good' : 'warn'}">${sub.length} liên kết</span></div>
           ${sub.length ? `<div class="tree-children">${sub.join('')}</div>` : ''}</div>`);
       }));
-      S.emps.forEach(e => {
-        const l = e.iidLinks.find(x => x.kpiId === k.id);
-        if (l) kids.push(leaf('emp', 'CN nhận trực tiếp', `<b>${esc(e.name)}</b> <span class="muted small">${esc(deptById(e.deptId)?.name || '')}</span>`, `<span class="tag">${fmt(l.weight)}%</span>`));
-      });
       return `<div class="tree-node open"><div class="tn-head" data-action="toggle"><span class="caret">▶</span><span class="tag iid">KPI IID</span><b style="flex:1">${esc(k.name)} ${rollupBadge(k)}</b><span class="tag">${fmt(k.weight)}%</span>${pct(k)}<span class="tag ${kids.length ? 'good' : 'bad'}">${kids.length} liên kết</span></div>
-        <div class="tree-children">${kids.join('') || '<div class="small muted">⚠ Chưa có bộ phận / cá nhân nào nhận KPI này</div>'}</div></div>`;
+        <div class="tree-children">${kids.join('') || '<div class="small muted">⚠ Chưa có bộ phận liên kết</div>'}</div></div>`;
     }).join('');
 
     return `
@@ -1030,8 +1310,9 @@
     </section>`;
   }
 
-  /* ---------- Kiểm tra nguyên tắc ---------- */
+  /* ---------- Kiểm tra nguyên tắc (Dành cho Admin & Manager) ---------- */
   function viewRules() {
+    if (isStaff()) return `<div class="card empty">Trang kiểm tra nguyên tắc dành cho cấp Quản lý và Giám đốc Khối.</div>`;
     const r = checkRules();
     const sorted = [...r.issues].sort((a, b) => (a.level === 'err' ? 0 : 1) - (b.level === 'err' ? 0 : 1));
     const navAttrs = n => n ? `data-action="goto" data-view="${n.view}" ${n.dept ? `data-dept="${n.dept}"` : ''} ${n.emp ? `data-emp="${n.emp}"` : ''}` : '';
@@ -1052,8 +1333,9 @@
     <section class="card mt"><div class="card-head"><h2>Đã đạt nguyên tắc</h2><span class="tag good">${r.oks.length}</span></div>${oks}</div>`;
   }
 
-  /* ---------- Màn hình Phân quyền & Người dùng (RBAC Matrix) ---------- */
+  /* ---------- Phân quyền & Người dùng (Chỉ Admin) ---------- */
   function viewUsers() {
+    if (!isAdm()) return `<div class="card empty">Tính năng quản trị người dùng chỉ dành cho Admin (Giám đốc Khối).</div>`;
     const rolesList = Object.values(ROLES);
     const userRows = S.users.map(u => {
       const r = roleOf(u);
@@ -1063,7 +1345,7 @@
         <td>
           <div class="row">
             ${avatar((u.name || '?').slice(0, 2).toUpperCase(), d?.color || 'var(--blue)', 34)}
-            <div><div class="kpi-name">${esc(u.name)} ${isCur ? '<span class="tag good">Đang dùng</span>' : ''}</div>
+            <div><div class="kpi-name">${esc(u.name)} ${isCur ? '<span class="tag good">Đang chọn</span>' : ''}</div>
             <div class="kpi-meta">${esc(u.email || '—')}</div></div>
           </div>
         </td>
@@ -1071,8 +1353,8 @@
         <td>${esc(u.title || '—')}</td>
         <td>${d ? `<span class="tag dept">${esc(d.name)}</span>` : '<span class="muted small">Toàn Khối (Khối IID)</span>'}</td>
         <td class="num">
-          <button class="btn sm ${isCur ? 'ghost' : ''}" data-action="switch-user" data-uid="${u.id}">${isCur ? '✓ Đang chọn' : 'Đăng nhập vai trò này'}</button>
-          ${isAdm() ? `<button class="icon-btn" title="Sửa" data-action="edit-user" data-uid="${u.id}">✎</button>` : ''}
+          <button class="btn sm ${isCur ? 'ghost' : ''}" data-action="switch-user" data-uid="${u.id}">${isCur ? '✓ Đang dùng' : 'Đăng nhập vai trò này'}</button>
+          <button class="icon-btn" title="Sửa" data-action="edit-user" data-uid="${u.id}">✎</button>
         </td>
       </tr>`;
     }).join('');
@@ -1080,10 +1362,10 @@
     return `
     <section class="card hero">
       <div>
-        <h2>Quản lý Phân quyền & Tài khoản</h2>
-        <p>Hệ thống hỗ trợ 4 cấp phân quyền: <b>Admin (Giám đốc Khối)</b>, <b>Manager (Trưởng Bộ phận)</b>, <b>Leader (Trưởng nhóm)</b> và <b>Staff (Nhân viên)</b>. Bạn có thể chuyển đổi nhanh vai trò để kiểm thử phân quyền.</p>
+        <h2>Quản lý Phân quyền & Người dùng</h2>
+        <p>Quản trị danh sách tài khoản và phân quyền cho 4 cấp: Admin, Manager, Leader, Staff.</p>
         <div class="row mt">
-          ${isAdm() ? '<button class="btn" data-action="add-user">＋ Thêm tài khoản</button>' : ''}
+          <button class="btn" data-action="add-user">＋ Thêm tài khoản</button>
           <button class="btn ghost" data-action="switch-user-modal">👤 Chuyển đổi vai trò nhanh</button>
         </div>
       </div>
@@ -1094,28 +1376,6 @@
         </div>`).join('')}
       </div>
     </section>
-
-    <section class="card mt">
-      <div class="card-head">
-        <h2>Ma trận quyền hạn (Permission Matrix)</h2>
-      </div>
-      <div class="table-wrap"><table>
-        <thead>
-          <tr><th>Chức năng</th><th class="num">👑 Admin</th><th class="num">💼 Manager</th><th class="num">🎖️ Leader</th><th class="num">👤 Staff</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>Thiết lập KPI cấp Khối IID</td><td class="num"><span class="tag good">Toàn quyền</span></td><td class="num"><span class="tag">Xem</span></td><td class="num"><span class="tag">Xem</span></td><td class="num"><span class="tag">Xem</span></td></tr>
-          <tr><td>Thiết lập KPI Bộ phận & Phân bổ</td><td class="num"><span class="tag good">Toàn quyền</span></td><td class="num"><span class="tag good">Bộ phận mình</span></td><td class="num"><span class="tag">Xem</span></td><td class="num"><span class="tag">Xem</span></td></tr>
-          <tr><td>Quản lý KPI Cá nhân</td><td class="num"><span class="tag good">Toàn quyền</span></td><td class="num"><span class="tag good">Bộ phận mình</span></td><td class="num"><span class="tag good">Nhóm mình</span></td><td class="num"><span class="tag good">Chính mình</span></td></tr>
-          <tr><td>Nhập số liệu thực tế hàng tháng</td><td class="num"><span class="tag good">Mọi cấp</span></td><td class="num"><span class="tag good">BP & Thành viên</span></td><td class="num"><span class="tag good">Nhóm mình</span></td><td class="num"><span class="tag good">Chính mình</span></td></tr>
-          <tr><td>Tự đánh giá quý (Self-evaluation)</td><td class="num"><span class="tag good">Có</span></td><td class="num"><span class="tag good">Có</span></td><td class="num"><span class="tag good">Có</span></td><td class="num"><span class="tag good">Có</span></td></tr>
-          <tr><td>Quản lý review (Manager review)</td><td class="num"><span class="tag good">Toàn khối</span></td><td class="num"><span class="tag good">Bộ phận mình</span></td><td class="num"><span class="tag">Nhận xét</span></td><td class="num"><span class="muted">–</span></td></tr>
-          <tr><td>Phê duyệt & Chốt kết quả (Final Approval)</td><td class="num"><span class="tag good">Toàn khối</span></td><td class="num"><span class="tag good">Bộ phận mình</span></td><td class="num"><span class="muted">–</span></td><td class="muted num">–</td></tr>
-          <tr><td>Cấu hình Tự động Roll-up (Cá nhân → BP → Khối)</td><td class="num"><span class="tag good">Có</span></td><td class="num"><span class="tag good">Có</span></td><td class="num"><span class="muted">–</span></td><td class="muted num">–</td></tr>
-        </tbody>
-      </table></div>
-    </section>
-
     <section class="card mt">
       <div class="card-head">
         <h2>Danh sách tài khoản & vai trò</h2>
@@ -1135,7 +1395,8 @@
   };
 
   function render(animate = false) {
-    computeRollups(); // Luôn tính toán đồng bộ rollup trước khi hiển thị
+    computeRollups();
+    updateUserWidget();
     if (!RENDER[UI.view]) UI.view = 'dashboard';
     $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === UI.view));
     const [t, s] = VIEWS[UI.view];
@@ -1148,7 +1409,6 @@
     if (animate) { v.style.animation = 'none'; void v.offsetHeight; v.style.animation = ''; window.scrollTo(0, 0); }
     else window.scrollTo(0, y);
     updateBadge();
-    updateUserWidget();
   }
   function navigate(view) {
     UI.view = view;
@@ -1192,7 +1452,7 @@
     }).join('');
 
     openModal('👤 Chuyển đổi tài khoản & Vai trò kiểm thử', `
-      <div class="field full"><span class="help">Chọn một tài khoản để trải nghiệm ứng dụng từ góc nhìn của vai trò đó (Admin, Manager, Leader, Staff). Quyền hạn giao diện sẽ thay đổi tương ứng.</span></div>
+      <div class="field full"><span class="help">Chọn một tài khoản để kiểm tra giao diện và quyền truy cập thực tế. Dữ liệu sẽ được lọc chính xác theo trách nhiệm của người đó.</span></div>
       <div class="user-select-list">${items}</div>
     `, () => true);
   }
@@ -1429,13 +1689,16 @@
       case 'switch-user-modal': switchUserModal(); break;
       case 'switch-to-admin':
         S.currentUserId = 'u_admin';
-        save(); render(); toast('Đã chuyển sang vai trò: Admin (Giám đốc Khối)');
+        UI.selDept = UI.selEmp = null;
+        save(); render(true); toast('Đã chuyển sang vai trò: Admin (Giám đốc Khối)');
         break;
       case 'switch-user': {
         const u = S.users.find(x => x.id === ds.uid);
         if (u) {
           S.currentUserId = u.id;
-          save(); closeModal(); render();
+          UI.selDept = u.deptId || null;
+          UI.selEmp = u.empId || null;
+          save(); closeModal(); render(true);
           toast(`Đã chuyển sang: ${u.name} (${roleOf(u).badge})`);
         }
         break;
