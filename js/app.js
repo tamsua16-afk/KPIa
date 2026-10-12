@@ -386,8 +386,18 @@
   const letterWords = s => String(s).split(/\s+/).filter(w => /^\p{L}/u.test(w));
   const deptInitials = d => { const w = letterWords(d.name); return w.length > 1 ? wordInitials(w) : (w[0] || '?').slice(0, 2).toUpperCase(); };
   const empInitials = e => { const w = letterWords(e.name); return w.length > 1 ? wordInitials(w.slice(-2)) : (w[0] || '?').slice(0, 2).toUpperCase(); };
-  const avatar = (txt, color, size = 44) => `<div class="avatar" style="background:linear-gradient(135deg, ${color}, ${color}99);width:${size}px;height:${size}px;${size < 40 ? 'font-size:12px;border-radius:9px' : ''}">${esc(txt)}</div>`;
-  const empColor = e => deptById(e.deptId)?.color || 'var(--blue)';
+  const userInitials = u => {
+    if (!u) return '?';
+    if (u.id === 'u_admin' || u.role === 'admin') return 'AD';
+    const w = letterWords(u.name || '');
+    return w.length > 1 ? wordInitials(w.slice(-2)) : (u.name || '?').slice(0, 2).toUpperCase();
+  };
+  const empColor = e => deptById(e?.deptId)?.color || '#0068b7';
+  const avatar = (txt, color = '#0068b7', size = 44) => {
+    let c = String(color || '#0068b7').trim();
+    if (c.startsWith('var(') || !c) c = '#0068b7';
+    return `<div class="avatar" style="background:${c};color:#ffffff;width:${size}px;height:${size}px;min-width:${size}px;min-height:${size}px;font-size:${size < 40 ? 12 : 14}px;border-radius:${size < 40 ? 9 : 12}px;display:grid;place-items:center;font-weight:800;flex-shrink:0">${esc(txt)}</div>`;
+  };
   const typeTag = k => `<span class="tag ${k.type}">${k.type === 'activity' ? 'Hoạt động' : 'Kết quả'}</span>`;
   const dirTxt = k => k.direction === 'down' ? '↓ càng thấp càng tốt' : '↑ càng cao càng tốt';
   const rollupBadge = k => {
@@ -458,24 +468,45 @@
         }
         const p = pctOf(k, from, to), a = actualOf(k, from, to);
         rows += `<tr>
-          <td><span class="tag ${g.cls}">${g.tag}</span></td>
-          <td>
+          <td class="col-source"><span class="tag ${g.cls}">${g.tag}</span></td>
+          <td class="kpi-col-cell">
             <div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div>
-            ${k.desc ? `<div class="kpi-desc small muted" style="margin-top:2px">${esc(k.desc)}</div>` : ''}
-            <div class="kpi-meta" style="margin-top:3px">${typeTag(k)} 👤 ${esc(k.owner || '—')} · 📁 ${esc(k.source || '—')}</div>
+            ${k.desc ? `<div class="kpi-desc">${esc(k.desc)}</div>` : ''}
+            <div class="kpi-meta">${typeTag(k)} <span>👤 ${esc(k.owner || '—')}</span> · <span>📁 ${esc(k.source || '—')}</span></div>
           </td>
-          <td class="num"><b>${fmt(k.target)}</b> <span class="muted small">${esc(k.unit)}</span></td>
-          <td class="num"><b>${fmt(it.weight)}%</b></td>
-          <td>${it.link || '<span class="muted small">—</span>'}</td>
-          <td class="num"><b>${fmt(a)}</b> <span class="muted small">${esc(k.unit)}</span></td>
-          <td style="min-width:140px">${pctBar(p)}</td>
-          <td>${chip(p)}</td>
-          <td class="num" style="white-space:nowrap">${canEdit ? (it.actions || '') : ''}</td>
+          <td class="num col-target"><b>${fmt(k.target)}</b> <span class="muted small">${esc(k.unit)}</span></td>
+          <td class="num col-weight"><b>${fmt(it.weight)}%</b></td>
+          <td class="col-link">${it.link || '<span class="muted small">—</span>'}</td>
+          <td class="num col-actual"><b>${fmt(a)}</b> <span class="muted small">${esc(k.unit)}</span></td>
+          <td class="col-pct">${pctBar(p)}</td>
+          <td class="col-rating">${chip(p)}</td>
+          <td class="num col-act">${canEdit ? (it.actions || '') : ''}</td>
         </tr>`;
       });
     });
-    return `<div class="table-wrap"><table>
-      <thead><tr><th>Nguồn</th><th>KPI</th><th class="num">Mục tiêu năm</th><th class="num">Tỷ trọng</th><th>Liên kết lên</th><th class="num">Thực tế YTD</th><th>% hoàn thành</th><th>Đánh giá</th><th></th></tr></thead>
+    return `<div class="table-wrap"><table class="kpi-table">
+      <colgroup>
+        <col style="width: 76px">
+        <col style="min-width: 320px; width: 34%">
+        <col style="width: 120px">
+        <col style="width: 90px">
+        <col style="width: 150px">
+        <col style="width: 125px">
+        <col style="width: 160px">
+        <col style="width: 135px">
+        <col style="width: 65px">
+      </colgroup>
+      <thead><tr>
+        <th class="col-source">Nguồn</th>
+        <th class="col-kpi">KPI & Mô tả mục tiêu</th>
+        <th class="num col-target">Mục tiêu năm</th>
+        <th class="num col-weight">Tỷ trọng</th>
+        <th class="col-link">Liên kết lên</th>
+        <th class="num col-actual">Thực tế YTD</th>
+        <th class="col-pct">% hoàn thành</th>
+        <th class="col-rating">Đánh giá</th>
+        <th class="col-act"></th>
+      </tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
   const kpiActions = (scope, eid, kid) =>
@@ -803,20 +834,20 @@
     const rows = S.iid.map(k => {
       const p = pctOf(k, ...P);
       return `<tr>
-        <td>
+        <td class="kpi-col-cell">
           <div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div>
-          ${k.desc ? `<div class="kpi-desc small muted" style="margin-top:2px">${esc(k.desc)}</div>` : ''}
-          <div class="kpi-meta" style="margin-top:2px">${esc(k.owner || '—')} · ${esc(k.source || '—')}</div>
+          ${k.desc ? `<div class="kpi-desc">${esc(k.desc)}</div>` : ''}
+          <div class="kpi-meta">👤 ${esc(k.owner || '—')} · 📁 ${esc(k.source || '—')}</div>
         </td>
-        <td>${typeTag(k)}</td>
-        <td class="num">${fmt(k.target)} <span class="muted small">${esc(k.unit)}</span></td>
-        <td class="num"><b>${fmt(k.weight)}%</b></td>
-        <td class="small muted">${AGGREGATIONS[k.aggregation]}<br>${dirTxt(k)}</td>
-        <td class="num">${fmt(actualOf(k, ...P))}</td>
-        <td style="min-width:140px">${pctBar(p)}</td>
-        <td>${chip(p)}</td>
-        <td>${linkedCount(k)}</td>
-        <td class="num" style="white-space:nowrap">${canManage ? kpiActions('iid', '', k.id) : '<span class="muted small">Xem</span>'}</td></tr>`;
+        <td class="col-type">${typeTag(k)}</td>
+        <td class="num col-target"><b>${fmt(k.target)}</b> <span class="muted small">${esc(k.unit)}</span></td>
+        <td class="num col-weight"><b>${fmt(k.weight)}%</b></td>
+        <td class="small muted col-calc">${AGGREGATIONS[k.aggregation]}<br>${dirTxt(k)}</td>
+        <td class="num col-actual"><b>${fmt(actualOf(k, ...P))}</b> <span class="muted small">${esc(k.unit)}</span></td>
+        <td class="col-pct">${pctBar(p)}</td>
+        <td class="col-rating">${chip(p)}</td>
+        <td class="col-cascade">${linkedCount(k)}</td>
+        <td class="num col-act">${canManage ? kpiActions('iid', '', k.id) : '<span class="muted small">Xem</span>'}</td></tr>`;
     }).join('');
 
     return `
@@ -845,8 +876,31 @@
         <span class="spacer"></span>
         ${canManage ? '<button class="btn" data-action="add-kpi" data-scope="iid" id="btn-add-iid">＋ Thêm KPI IID</button>' : ''}
       </div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>KPI</th><th>Loại</th><th class="num">Mục tiêu năm</th><th class="num">Tỷ trọng</th><th>Cách tính</th><th class="num">Thực tế YTD</th><th>% hoàn thành</th><th>Đánh giá</th><th>Được cascade</th><th></th></tr></thead>
+      <div class="table-wrap"><table class="kpi-table">
+        <colgroup>
+          <col style="min-width: 320px; width: 32%">
+          <col style="width: 100px">
+          <col style="width: 120px">
+          <col style="width: 90px">
+          <col style="width: 130px">
+          <col style="width: 125px">
+          <col style="width: 160px">
+          <col style="width: 135px">
+          <col style="width: 110px">
+          <col style="width: 65px">
+        </colgroup>
+        <thead><tr>
+          <th class="col-kpi">KPI Tổng IID & Mô tả</th>
+          <th class="col-type">Loại</th>
+          <th class="num col-target">Mục tiêu năm</th>
+          <th class="num col-weight">Tỷ trọng</th>
+          <th class="col-calc">Cách tính</th>
+          <th class="num col-actual">Thực tế YTD</th>
+          <th class="col-pct">% hoàn thành</th>
+          <th class="col-rating">Đánh giá</th>
+          <th class="col-cascade">Được cascade</th>
+          <th class="col-act"></th>
+        </tr></thead>
         <tbody>${rows || '<tr><td colspan="10" class="empty">Chưa có KPI IID</td></tr>'}</tbody>
       </table></div>
     </section>
@@ -1347,10 +1401,11 @@
         <td>${esc(u.title || '—')}</td>
         <td>${d ? `<span class="tag dept">${esc(d.name)}</span>` : '<span class="muted small">Toàn Khối (Khối IID)</span>'}</td>
         <td><span class="tag">••••••••</span></td>
-        <td class="num">
+        <td class="num" style="white-space:nowrap">
           <button class="btn sm ${isCur ? 'ghost' : ''}" data-action="switch-user" data-uid="${u.id}">${isCur ? '✓ Đang dùng' : 'Đăng nhập'}</button>
           <button class="btn ghost sm" title="Đặt lại mật khẩu về password123" data-action="admin-reset-pwd" data-uid="${u.id}">Reset MK</button>
           <button class="icon-btn" title="Sửa tài khoản" data-action="edit-user" data-uid="${u.id}">✎</button>
+          ${(!isCur && u.id !== 'u_admin') ? `<button class="icon-btn del" title="Xóa tài khoản" data-action="del-user" data-uid="${u.id}">🗑</button>` : ''}
         </td>
       </tr>`;
     }).join('');
@@ -1359,9 +1414,11 @@
     <section class="card hero">
       <div>
         <h2>Quản lý Tài khoản & Phân quyền</h2>
-        <p>Cấp tài khoản theo Email và Mật khẩu cho từng nhân sự. Mỗi cá nhân có thể tự đổi mật khẩu, hoặc Admin có quyền đặt lại mật khẩu về mặc định.</p>
-        <div class="row mt">
+        <p>Cấp tài khoản theo Email và Mật khẩu cho từng nhân sự. Cho phép import danh sách nhân sự hàng loạt theo file mẫu Excel/CSV để khởi tạo hệ thống nhanh chóng.</p>
+        <div class="row mt" style="flex-wrap:wrap;gap:8px">
           <button class="btn" data-action="add-user">＋ Cấp tài khoản mới</button>
+          <button class="btn ghost" data-action="import-users-modal" id="btn-import-users">📥 Import danh sách nhân sự</button>
+          <button class="btn ghost" data-action="download-user-template">📋 Tải file mẫu CSV</button>
           <button class="btn ghost" data-action="account-modal">👤 Tài khoản của tôi</button>
         </div>
       </div>
@@ -1373,9 +1430,12 @@
       </div>
     </section>
     <section class="card mt">
-      <div class="card-head">
+      <div class="card-head" style="flex-wrap:wrap;gap:8px">
         <h2>Danh sách tài khoản cấp Email & Mật khẩu</h2>
-        <span class="tag">${S.users.length} tài khoản</span>
+        <span class="spacer"></span>
+        <button class="btn sm ghost" data-action="download-user-template">📋 Tải mẫu CSV</button>
+        <button class="btn sm" data-action="import-users-modal">📥 Import nhân sự</button>
+        <span class="tag" style="margin-left:4px">${S.users.length} tài khoản</span>
       </div>
       <div class="table-wrap"><table>
         <thead><tr><th>Họ tên & Email</th><th>Vai trò</th><th>Chức danh</th><th>Đơn vị phụ trách</th><th>Mật khẩu</th><th class="num">Thao tác</th></tr></thead>
@@ -1410,6 +1470,7 @@
     UI.view = view;
     if (location.hash.slice(1) !== view) history.replaceState(null, '', '#' + view);
     $('#sidebar').classList.remove('open');
+    $('#sidebar-backdrop')?.classList.remove('show');
     render(true);
   }
 
@@ -1417,11 +1478,22 @@
      MODAL & FORMS (ĐỔI MẬT KHẨU, ACCOUNT, V.V.)
      ========================================================= */
   let modalSubmit = null, modalInput = null;
-  function openModal(title, html, onSubmit, onInput) {
+  function openModal(title, html, onSubmit, onInput, opts = {}) {
     $('#modal-title').textContent = title;
     const f = $('#modal-form');
-    f.innerHTML = html + `<div class="modal-actions"><button type="button" class="btn ghost" data-action="close-modal" id="modal-cancel">Hủy</button><button type="submit" class="btn" id="modal-save">Lưu</button></div>`;
-    modalSubmit = onSubmit; modalInput = onInput || null;
+    const isViewOnly = Boolean(opts.viewOnly || !onSubmit);
+    const saveText = opts.saveText || 'Lưu';
+
+    let actionsHtml = '';
+    if (isViewOnly) {
+      actionsHtml = `<div class="modal-actions"><button type="button" class="btn ghost" data-action="close-modal" id="modal-cancel">Đóng</button></div>`;
+    } else {
+      actionsHtml = `<div class="modal-actions"><button type="button" class="btn ghost" data-action="close-modal" id="modal-cancel">Hủy</button><button type="submit" class="btn" id="modal-save">${saveText}</button></div>`;
+    }
+
+    f.innerHTML = html + actionsHtml;
+    modalSubmit = isViewOnly ? null : onSubmit;
+    modalInput = onInput || null;
     $('#modal').hidden = false;
     if (modalInput) modalInput(f);
     setTimeout(() => f.querySelector('input:not([type=hidden]), textarea, select')?.focus(), 50);
@@ -1436,15 +1508,16 @@
     const u = curUser();
     const r = roleOf(u);
     const d = deptById(u.deptId);
+    const c = d?.color || '#0068b7';
 
     openModal('👤 Tài khoản của bạn', `
       <div class="field full">
         <div class="profile-modal-card">
-          ${avatar((u.name || '?').slice(0, 2).toUpperCase(), d?.color || 'var(--blue)', 48)}
-          <div style="flex:1">
-            <h3 style="font-size:16px">${esc(u.name)}</h3>
+          ${avatar(userInitials(u), c, 48)}
+          <div style="flex:1;min-width:0">
+            <h3 style="font-size:16px;font-weight:700;color:var(--text)">${esc(u.name)}</h3>
             <div class="small muted" style="margin-top:2px">${esc(u.email)}</div>
-            <div class="row" style="margin-top:6px;gap:6px">
+            <div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">
               <span class="role-pill ${r.id}">${r.badge}</span>
               <span class="tag">${esc(u.title || '')}</span>
               ${d ? `<span class="tag dept">${esc(d.name)}</span>` : '<span class="tag iid">Toàn Khối IID</span>'}
@@ -1459,7 +1532,7 @@
           <button type="button" class="btn ghost danger-hover" data-action="do-logout" style="grid-column: 1 / -1">🚪 Đăng xuất khỏi hệ thống</button>
         </div>
       </div>
-    `, () => true);
+    `, null, null, { viewOnly: true });
   }
 
   /* ---------- Modal Đổi Mật Khẩu (Change Password) ---------- */
@@ -1548,20 +1621,25 @@
       const r = roleOf(u);
       const d = deptById(u.deptId);
       const isCur = u.id === S.currentUserId;
+      const c = d?.color || '#0068b7';
+      const av = avatar(userInitials(u), c, 40);
       return `<div class="user-select-item ${isCur ? 'current' : ''}" data-action="switch-user" data-uid="${u.id}">
-        ${avatar((u.name || '?').slice(0, 2).toUpperCase(), d?.color || 'var(--blue)', 38)}
-        <div style="flex:1">
-          <div class="row"><b>${esc(u.name)}</b> <span class="role-pill ${r.id}">${r.badge}</span></div>
-          <div class="small muted">${esc(u.email)} · ${d ? esc(d.name) : 'Toàn Khối IID'}</div>
+        ${av}
+        <div class="user-select-info">
+          <div class="user-select-title-row">
+            <span class="user-select-name">${esc(u.name)}</span>
+            <span class="role-pill ${r.id}">${r.badge}</span>
+          </div>
+          <div class="user-select-sub">${esc(u.email)} · ${d ? esc(d.name) : 'Toàn Khối IID'} (${esc(u.title || '')})</div>
         </div>
-        ${isCur ? '<span class="tag good">Đang chọn</span>' : '<button class="btn sm ghost">Chọn</button>'}
+        ${isCur ? '<span class="tag good">Đang chọn</span>' : '<button type="button" class="btn sm ghost">Chọn</button>'}
       </div>`;
     }).join('');
 
     openModal('👥 Chuyển đổi tài khoản (Demo kiểm thử)', `
       <div class="field full"><span class="help">Chọn nhanh tài khoản để kiểm tra góc nhìn và quyền hạn tương ứng.</span></div>
       <div class="user-select-list">${items}</div>
-    `, () => true);
+    `, null, null, { viewOnly: true });
   }
 
   function userModal(uidToEdit) {
@@ -1601,6 +1679,309 @@
       }
       save(); render(); toast(old ? 'Đã cập nhật tài khoản!' : 'Đã cấp tài khoản thành công!');
     });
+  }
+
+  /* ---------- Tải file mẫu danh sách nhân sự (CSV) ---------- */
+  function downloadUserTemplate() {
+    const header = 'Họ và tên,Email công việc,Chức danh,Phòng ban,Vai trò,Mật khẩu khởi tạo\r\n';
+    const sampleRows = [
+      'Nguyễn Văn An,an.nv@gmo.vn,Chuyên viên Sales,Kinh doanh (Sales),staff,password123',
+      'Trần Thị Bích,bich.tt@gmo.vn,Customer Success Lead,Customer Success & Hỗ trợ,leader,password123',
+      'Lê Hoàng Cường,cuong.lh@gmo.vn,Chuyên viên Marketing,Marketing & Tăng trưởng,staff,password123',
+      'Phạm Đình Dũng,dung.pd@gmo.vn,Kỹ sư Hệ thống Cloud,Vận hành & Kỹ thuật Hệ thống,staff,password123',
+      'Hoàng Mai Hương,huong.hm@gmo.vn,Phó phòng Kinh doanh,Kinh doanh (Sales),manager,password123'
+    ].join('\r\n');
+    const notes = '\r\n# Hướng dẫn:\r\n# - Phòng ban có thể điền tên phòng hoặc mã: Kinh doanh (Sales), Customer Success & Hỗ trợ, Marketing & Tăng trưởng, Vận hành & Kỹ thuật Hệ thống\r\n# - Vai trò chấp nhận: admin, manager, leader, staff\r\n# - Mật khẩu để trống sẽ tự động lấy mặc định là: password123\r\n';
+
+    // Thêm UTF-8 BOM (\uFEFF) để Excel hiển thị tiếng Việt có dấu chuẩn xác
+    const blob = new Blob(['\uFEFF' + header + sampleRows + notes], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `Mau_Danh_Sach_Nhan_Su_Tenten_KPI.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast('✅ Đã tải file mẫu CSV danh sách nhân sự');
+  }
+
+  /* ---------- Modal Import danh sách nhân sự & Cấp tài khoản ---------- */
+  function importUsersModal() {
+    if (!isAdm()) return;
+
+    let parsedList = [];
+
+    function updatePreviewTable(container) {
+      const pCount = container.querySelector('#import-preview-count');
+      const pTbody = container.querySelector('#import-preview-tbody');
+      const btnSave = $('#modal-save');
+
+      if (!parsedList.length) {
+        if (pCount) pCount.textContent = 'Chưa có dữ liệu hợp lệ';
+        if (pTbody) pTbody.innerHTML = '<tr><td colspan="6" class="muted small center" style="padding:18px">Dán nội dung bảng tính hoặc chọn tệp CSV để xem trước danh sách...</td></tr>';
+        if (btnSave) btnSave.disabled = true;
+        return;
+      }
+
+      const okN = parsedList.filter(x => x.status === 'ok').length;
+      const upN = parsedList.filter(x => x.status === 'update').length;
+      const errN = parsedList.filter(x => x.status === 'err').length;
+
+      if (pCount) pCount.innerHTML = `Đã nhận diện <b>${parsedList.length}</b> dòng (${okN} tạo mới, ${upN} cập nhật, ${errN} lỗi)`;
+
+      if (pTbody) {
+        pTbody.innerHTML = parsedList.map(item => {
+          let badge = '<span class="import-badge-ok">＋ Tạo mới</span>';
+          if (item.status === 'update') badge = '<span class="import-badge-warn">✎ Cập nhật</span>';
+          if (item.status === 'err') badge = `<span class="import-badge-err">⚠️ ${esc(item.errMsg)}</span>`;
+          const dObj = deptById(item.deptId);
+          const rObj = ROLES[item.role] || ROLES.staff;
+
+          return `<tr>
+            <td><b>${esc(item.name || '—')}</b></td>
+            <td><code>${esc(item.email || '—')}</code></td>
+            <td>${esc(item.title || '—')}</td>
+            <td>${dObj ? `<span class="tag dept">${esc(dObj.name)}</span>` : (item.deptId ? esc(item.deptId) : '<span class="muted small">Toàn Khối</span>')}</td>
+            <td><span class="role-pill ${rObj.id}">${rObj.badge}</span></td>
+            <td>${badge}</td>
+          </tr>`;
+        }).join('');
+      }
+      if (btnSave) btnSave.disabled = !parsedList.some(x => x.status !== 'err');
+    }
+
+    function parseInputText(text) {
+      if (!text || !text.trim()) { parsedList = []; return; }
+      text = text.trim();
+
+      // Hỗ trợ JSON mảng
+      if (text.startsWith('[') && text.endsWith(']')) {
+        try {
+          const arr = JSON.parse(text);
+          if (Array.isArray(arr)) {
+            parsedList = arr.map(mapUserRow);
+            return;
+          }
+        } catch (_) {}
+      }
+
+      // Phân tách dòng (CSV, TSV, Semicolon)
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+      if (!lines.length) { parsedList = []; return; }
+
+      // Nhận diện phân cách: Tab (Excel paste), Semicolon hoặc Phẩy
+      const first = lines[0];
+      let sep = ',';
+      if (first.includes('\t')) sep = '\t';
+      else if (first.includes(';') && (first.match(/;/g) || []).length >= (first.match(/,/g) || []).length) sep = ';';
+
+      const parseLine = line => {
+        if (sep === '\t') return line.split('\t').map(c => c.trim().replace(/^["']|["']$/g, ''));
+        const arr = []; let cur = '', inQ = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (ch === '"' || ch === "'") inQ = !inQ;
+          else if (ch === sep && !inQ) { arr.push(cur.trim().replace(/^["']|["']$/g, '')); cur = ''; }
+          else cur += ch;
+        }
+        arr.push(cur.trim().replace(/^["']|["']$/g, ''));
+        return arr;
+      };
+
+      const rows = lines.map(parseLine);
+      const h0 = (rows[0][0] || '').toLowerCase(), h1 = (rows[0][1] || '').toLowerCase();
+      const isHeader = h0.includes('tên') || h0.includes('name') || h1.includes('email') || h1.includes('mail');
+      const dataRows = isHeader ? rows.slice(1) : rows;
+
+      parsedList = dataRows.map(r => mapUserRow({
+        name: r[0] || '',
+        email: r[1] || '',
+        title: r[2] || '',
+        dept: r[3] || '',
+        role: r[4] || 'staff',
+        password: r[5] || 'password123'
+      })).filter(r => r.name || r.email);
+    }
+
+    function mapUserRow(r) {
+      const name = (r.name || '').trim();
+      const email = (r.email || '').trim().toLowerCase();
+      const title = (r.title || '').trim();
+      const deptRaw = (r.dept || r.department || r.deptId || '').trim();
+      const roleRaw = (r.role || 'staff').trim().toLowerCase();
+      const password = (r.password || 'password123').trim();
+
+      // Nhận diện phòng ban thông minh
+      let deptId = null;
+      if (deptRaw) {
+        const dLow = deptRaw.toLowerCase();
+        const found = S.depts.find(d => d.id.toLowerCase() === dLow || d.name.toLowerCase() === dLow);
+        if (found) deptId = found.id;
+        else if (dLow.includes('sale') || dLow.includes('kinh doanh')) deptId = 'd_sales';
+        else if (dLow.includes('cs') || dLow.includes('customer') || dLow.includes('hỗ trợ') || dLow.includes('support')) deptId = 'd_cs';
+        else if (dLow.includes('mkt') || dLow.includes('marketing') || dLow.includes('tăng trưởng')) deptId = 'd_mkt';
+        else if (dLow.includes('ops') || dLow.includes('vận hành') || dLow.includes('kỹ thuật')) deptId = 'd_ops';
+        else deptId = S.depts[0]?.id || null;
+      } else {
+        deptId = S.depts[0]?.id || null;
+      }
+
+      // Nhận diện vai trò
+      let role = 'staff';
+      if (roleRaw.includes('admin') || roleRaw.includes('giám đốc')) role = 'admin';
+      else if (roleRaw.includes('mgr') || roleRaw.includes('manager') || roleRaw.includes('trưởng')) role = 'manager';
+      else if (roleRaw.includes('lead') || roleRaw.includes('trưởng nhóm')) role = 'leader';
+
+      // Kiểm tra tính hợp lệ
+      let status = 'ok', errMsg = '';
+      if (!email || !email.includes('@')) {
+        status = 'err'; errMsg = 'Email không hợp lệ';
+      } else if (!name) {
+        status = 'err'; errMsg = 'Thiếu họ tên';
+      } else {
+        const exists = S.users.some(u => u.email.toLowerCase() === email);
+        if (exists) status = 'update';
+      }
+
+      return { name, email, title, deptId, role, password, status, errMsg };
+    }
+
+    const defaultSample = [
+      'Nguyễn Văn An\tan.nv@gmo.vn\tChuyên viên Sales\tKinh doanh (Sales)\tstaff\tpassword123',
+      'Trần Thị Bích\tbich.tt@gmo.vn\tCustomer Success Lead\tCustomer Success & Hỗ trợ\tleader\tpassword123',
+      'Lê Hoàng Cường\tcuong.lh@gmo.vn\tChuyên viên Marketing\tMarketing & Tăng trưởng\tstaff\tpassword123',
+      'Phạm Đình Dũng\tdung.pd@gmo.vn\tKỹ sư Hệ thống Cloud\tVận hành & Kỹ thuật Hệ thống\tstaff\tpassword123'
+    ].join('\n');
+
+    openModal('📥 Import danh sách nhân sự & Cấp tài khoản', `
+      <div class="field full">
+        <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <span class="help">Tạo nhanh hàng loạt nhân sự và cấp tài khoản đăng nhập theo định dạng bảng tính.</span>
+          <button type="button" class="btn sm ghost" data-action="download-user-template">📋 Tải file mẫu CSV</button>
+        </div>
+      </div>
+
+      <div class="field full">
+        <label>Cách 1: Chọn tệp tải lên (.CSV, .TXT, .JSON)</label>
+        <input type="file" id="import-users-file-input" accept=".csv,.txt,.tsv,.json" style="padding:6px;font-size:12.5px" />
+      </div>
+
+      <div class="field full">
+        <label for="import-users-textarea">Cách 2: Hoặc copy & paste trực tiếp từ bảng tính Excel / Google Sheets</label>
+        <textarea id="import-users-textarea" rows="5" style="font-family:monospace;font-size:12px;white-space:pre" placeholder="Họ và tên&#9;Email&#9;Chức danh&#9;Phòng ban&#9;Vai trò&#9;Mật khẩu">${esc(defaultSample)}</textarea>
+        <span class="help">Thứ tự cột: <code>Họ và tên</code> · <code>Email công việc</code> · <code>Chức danh</code> · <code>Phòng ban</code> · <code>Vai trò</code> (staff/leader/manager/admin) · <code>Mật khẩu</code> (mặc định: password123)</span>
+      </div>
+
+      <div class="field full">
+        <label id="import-preview-count">Xem trước danh sách</label>
+        <div class="import-preview-wrap" id="import-preview-wrap">
+          <table class="import-preview-table">
+            <thead>
+              <tr>
+                <th>Họ và tên</th>
+                <th>Email</th>
+                <th>Chức danh</th>
+                <th>Phòng ban</th>
+                <th>Vai trò</th>
+                <th>Trạng thái</th>
+              </tr>
+            </thead>
+            <tbody id="import-preview-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    `, () => {
+      const validItems = parsedList.filter(x => x.status !== 'err');
+      if (!validItems.length) {
+        toast('Không có nhân sự hợp lệ nào để import!', true);
+        return false;
+      }
+
+      let createdN = 0, updatedN = 0;
+      validItems.forEach(item => {
+        // 1. Cập nhật hoặc tạo tài khoản S.users
+        let u = S.users.find(x => x.email.toLowerCase() === item.email.toLowerCase());
+        if (u) {
+          u.name = item.name;
+          u.title = item.title || u.title;
+          u.role = item.role;
+          if (item.deptId) u.deptId = item.deptId;
+          if (item.password) u.password = item.password;
+          updatedN++;
+        } else {
+          u = {
+            id: uid('u'),
+            name: item.name,
+            email: item.email,
+            password: item.password || 'password123',
+            role: item.role,
+            title: item.title,
+            deptId: item.deptId || null,
+            empId: null
+          };
+          S.users.push(u);
+          createdN++;
+        }
+
+        // 2. Cập nhật hoặc tạo hồ sơ nhân sự S.emps (KPI cá nhân)
+        let e = null;
+        if (u.empId) e = empById(u.empId);
+        if (!e) e = S.emps.find(x => x.name.toLowerCase() === item.name.toLowerCase());
+
+        if (e) {
+          e.title = item.title || e.title;
+          e.role = item.role;
+          if (item.deptId) e.deptId = item.deptId;
+          u.empId = e.id;
+        } else {
+          const ne = {
+            id: uid('e'),
+            name: item.name,
+            title: item.title,
+            role: item.role,
+            deptId: item.deptId || S.depts[0]?.id,
+            iidLinks: [],
+            deptLinks: [],
+            kpis: []
+          };
+          S.emps.push(ne);
+          u.empId = ne.id;
+        }
+      });
+
+      save();
+      render();
+      toast(`✅ Đã import thành công: ${createdN} tài khoản mới, cập nhật ${updatedN} tài khoản!`);
+      return true;
+    }, f => {
+      const ta = f.querySelector('#import-users-textarea');
+      const fi = f.querySelector('#import-users-file-input');
+
+      // Khởi tạo preview từ textarea
+      if (ta) {
+        parseInputText(ta.value);
+        updatePreviewTable(f);
+
+        ta.addEventListener('input', () => {
+          parseInputText(ta.value);
+          updatePreviewTable(f);
+        });
+      }
+
+      if (fi) {
+        fi.addEventListener('change', () => {
+          const file = fi.files?.[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = ev => {
+            const content = ev.target.result;
+            if (ta) ta.value = content;
+            parseInputText(content);
+            updatePreviewTable(f);
+            toast(`Đã đọc tệp: ${file.name}`);
+          };
+          reader.readAsText(file, 'utf-8');
+        });
+      }
+    }, { saveText: 'Tiến hành Import' });
   }
 
   function kpiModal(scope, eid, kid) {
@@ -1870,6 +2251,23 @@
       }
       case 'add-user': userModal(); break;
       case 'edit-user': userModal(ds.uid); break;
+      case 'import-users-modal': importUsersModal(); break;
+      case 'download-user-template': downloadUserTemplate(); break;
+      case 'del-user': {
+        if (!isAdm()) break;
+        const u = S.users.find(x => x.id === ds.uid);
+        if (!u) break;
+        if (u.id === 'u_admin' || u.id === S.currentUserId) {
+          toast('Không thể xóa tài khoản Admin đang hoạt động!', true);
+          break;
+        }
+        if (confirm(`Bạn có chắc muốn xóa tài khoản "${u.name}" (${u.email})?`)) {
+          S.users = S.users.filter(x => x.id !== u.id);
+          save(); render();
+          toast(`Đã xóa tài khoản ${u.name}`);
+        }
+        break;
+      }
 
       // Quick login từ màn hình đăng nhập
       case 'quick-login': {
@@ -1959,7 +2357,21 @@
   });
   form.addEventListener('input', () => { if (modalInput) modalInput(form); });
 
-  $('#menu-btn').addEventListener('click', () => $('#sidebar').classList.toggle('open'));
+  // Sidebar toggle cho cả Desktop (thu gọn sidebar) và Mobile/Tablet (drawer)
+  const toggleSidebar = () => {
+    if (window.innerWidth <= 1024) {
+      const isOpen = $('#sidebar').classList.toggle('open');
+      const backdrop = $('#sidebar-backdrop');
+      if (backdrop) backdrop.classList.toggle('show', isOpen);
+    } else {
+      document.body.classList.toggle('sidebar-collapsed');
+    }
+  };
+  $('#menu-btn')?.addEventListener('click', toggleSidebar);
+  $('#sidebar-backdrop')?.addEventListener('click', () => {
+    $('#sidebar').classList.remove('open');
+    $('#sidebar-backdrop')?.classList.remove('show');
+  });
   window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (RENDER[h] && h !== UI.view) navigate(h); });
 
   /* ---------- Init ---------- */
