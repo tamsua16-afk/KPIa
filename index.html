@@ -33,6 +33,7 @@
       <button class="nav-item" data-view="review" id="nav-review"><i>★</i>Review hàng quý</button>
       <button class="nav-item" data-view="cascade" id="nav-cascade"><i>⋔</i>Cây liên kết KPI</button>
       <button class="nav-item" data-view="rules" id="nav-rules"><i>✓</i>Kiểm tra nguyên tắc <b class="nav-badge" id="rules-badge"></b></button>
+      <button class="nav-item" data-view="users" id="nav-users"><i>👥</i>Phân quyền & Người dùng</button>
     </nav>
     <div class="sidebar-foot">
       <div class="motto">“Cùng một logic xuyên suốt — <b>IID → Bộ phận → Cá nhân</b> — để mọi đội ngũ cùng hướng về mục tiêu chung.”</div>
@@ -55,8 +56,25 @@
         <button class="btn ghost" id="btn-import" data-action="import">⇧ Nhập JSON</button>
         <button class="btn ghost danger-hover" id="btn-reset" data-action="reset">↺ Dữ liệu mẫu</button>
         <input type="file" id="import-file" accept="application/json" hidden />
+
+        <!-- User Role Switcher -->
+        <button class="user-badge" id="user-badge" data-action="switch-user-modal" title="Bấm để chuyển đổi vai trò và tài khoản">
+          <div class="user-avatar" id="current-user-avatar">AD</div>
+          <div class="user-meta">
+            <div class="user-name" id="current-user-name">Giám đốc Khối</div>
+            <div class="user-role-tag" id="current-user-role"><span class="role-pill admin">👑 Admin</span></div>
+          </div>
+          <span class="user-caret">▾</span>
+        </button>
       </div>
     </header>
+
+    <div class="role-banner" id="role-banner" hidden>
+      <span class="role-banner-ic">ℹ️</span>
+      <span id="role-banner-text">Đang xem với vai trò ...</span>
+      <button class="btn sm ghost" data-action="switch-user-modal">Đổi vai trò</button>
+      <button class="btn sm" id="btn-quick-admin" data-action="switch-to-admin">Về quyền Admin</button>
+    </div>
 
     <main id="view" class="view"></main>
   </div>

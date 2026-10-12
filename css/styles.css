@@ -351,6 +351,80 @@ button.tag:hover { filter: brightness(1.3); }
 .swatch input:checked + span { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px #fff; }
 .modal-body .field label[title] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* ---------- Role Switcher & User Badges ---------- */
+.user-badge {
+  display: inline-flex; align-items: center; gap: 10px; padding: 5px 12px 5px 6px;
+  border-radius: 99px; background: rgba(140, 170, 255, 0.1); border: 1px solid var(--line-2);
+  color: var(--text); cursor: pointer; transition: all .2s var(--ease);
+}
+.user-badge:hover {
+  background: rgba(61, 139, 255, 0.2); border-color: var(--blue);
+  box-shadow: 0 4px 16px -4px rgba(61, 139, 255, 0.5);
+}
+.user-avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--g-brand); color: #04122b;
+  font-weight: 800; font-size: 12px; display: grid; place-items: center;
+}
+.user-meta { display: flex; flex-direction: column; align-items: flex-start; text-align: left; line-height: 1.2; }
+.user-name { font-weight: 700; font-size: 12.5px; max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.user-role-tag { font-size: 11px; }
+.user-caret { font-size: 10px; color: var(--muted); margin-left: 2px; }
+
+/* Role Pills */
+.role-pill {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
+  border-radius: 99px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+}
+.role-pill.admin { background: rgba(255, 197, 66, .2); color: #ffd269; border: 1px solid rgba(255, 197, 66, .4); }
+.role-pill.manager { background: rgba(61, 139, 255, .2); color: #8bbaff; border: 1px solid rgba(61, 139, 255, .4); }
+.role-pill.leader { background: rgba(22, 194, 163, .2); color: #4de6ca; border: 1px solid rgba(22, 194, 163, .4); }
+.role-pill.staff { background: rgba(140, 170, 255, .15); color: #a9bcff; border: 1px solid rgba(140, 170, 255, .3); }
+
+/* Role Banner */
+.role-banner {
+  background: linear-gradient(90deg, rgba(61, 139, 255, .2), rgba(56, 208, 240, .1));
+  border-bottom: 1px solid var(--line-2); padding: 10px 32px;
+  display: flex; align-items: center; gap: 12px; font-size: 13px;
+  animation: slideDown .3s var(--ease);
+}
+@keyframes slideDown { from { transform: translateY(-100%); opacity: 0; } to { transform: none; opacity: 1; } }
+.role-banner-ic { font-size: 16px; }
+.role-banner span:nth-child(2) { flex: 1; }
+
+/* Rollup Tags & Styles */
+.rollup-tag {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px;
+  border-radius: 6px; font-size: 10.5px; font-weight: 700;
+  background: rgba(56, 208, 240, .18); color: var(--sky); border: 1px solid rgba(56, 208, 240, .35);
+}
+.rollup-tag.sum { background: rgba(47, 214, 131, .15); color: var(--green); border-color: rgba(47, 214, 131, .35); }
+.rollup-cell {
+  background: rgba(56, 208, 240, .05) !important;
+  color: var(--sky) !important; font-weight: 700;
+}
+.rollup-locked {
+  background: rgba(140, 170, 255, 0.05); cursor: not-allowed;
+  border-color: rgba(140, 170, 255, 0.1) !important; color: var(--sky);
+}
+
+/* User Selection Modal List */
+.user-select-list {
+  display: grid; gap: 8px; max-height: 400px; overflow-y: auto; padding-right: 4px;
+}
+.user-select-item {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+  border-radius: 12px; background: rgba(6, 12, 30, .45); border: 1px solid var(--line);
+  cursor: pointer; transition: all .2s;
+}
+.user-select-item:hover {
+  background: rgba(61, 139, 255, .15); border-color: var(--blue); transform: translateX(3px);
+}
+.user-select-item.current {
+  border-color: var(--teal); background: rgba(22, 194, 163, .12);
+  box-shadow: 0 0 0 1px var(--teal);
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1280px) {
   .g-4 { grid-template-columns: repeat(2, 1fr); }
