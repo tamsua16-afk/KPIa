@@ -3,9 +3,10 @@
   const months=q=>Array.from({length:3},(_,i)=>(q-1)*3+i+1);
   function migrate(s){
     const x=JSON.parse(JSON.stringify(s)); x.version=2; x.history=x.history||[];x.actions=x.actions||[];x.archive=x.archive||[];
-    x.kpis.forEach(k=>{k.mode=k.mode||'last';k.plan=k.plan||'annual';k.targets=k.targets||{};k.updates=k.updates||{};});return x;
+    x.kpis.forEach(k=>{k.mode=k.mode||'last';k.plan=k.plan||'annual';k.targets=k.targets||{};k.updates=k.updates||{};});
+    for(let [old,r]of Object.entries(x.reviews)){let bar=old.indexOf('|');if(bar<0)continue;let part;try{part=JSON.parse(old.slice(bar+1))}catch{continue}if(part[0]!=='Cá nhân')continue;let candidates=x.kpis.filter(k=>k.level==='Cá nhân'&&k.team===part[1]&&k.owner===part[2]);let mapped=[...new Set(candidates.map(key))];if(mapped.length===1){let next=old.slice(0,bar+1)+mapped[0];if(next!==old&&!x.reviews[next]){x.reviews[next]=r;delete x.reviews[old];}}}return x;
   }
-  const key=k=>JSON.stringify(k.level==='IID'?['IID']:k.level==='Bộ phận'?['Bộ phận',k.team]:['Cá nhân',k.team,k.owner]);
+  const key=k=>JSON.stringify(k.level==='IID'?['IID']:k.level==='Bộ phận'?['Bộ phận',k.team]:['Cá nhân',k.team,k.ownerEmail||k.owner]);
   const label=ks=>ks[0].level==='IID'?'Toàn khối IID':ks[0].level==='Bộ phận'?ks[0].team:ks[0].owner+' · '+ks[0].team;
   function target(k,m){if(k.targets[m]!=null)return k.targets[m];return k.plan==='linear'?k.target*m/12:k.plan==='monthly'?k.target/12:k.target;}
   function attainment(actual,t,direction){if(actual==null||t==null)return null;if(direction==='down')return actual===0?120:t/actual*100;return t===0?(actual===0?100:120):actual/t*100;}
