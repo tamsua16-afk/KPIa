@@ -17,14 +17,14 @@
 (() => {
   'use strict';
 
-  const STORE = 'kpi2027_iid_v2';
+  const STORE = 'kpi2027_iid_v3';
   const REVIEW_STATUS = [
     ['todo', 'Chưa bắt đầu', ''],
     ['self', 'Đã tự đánh giá', 'warn'],
     ['mgr', 'Quản lý đã review', 'iid'],
     ['done', 'Đã chốt', 'good']
   ];
-  const RATING_COLOR = { A: 'var(--green)', B: 'var(--sky)', C: 'var(--yellow)', D: 'var(--red)', NA: 'var(--dim)' };
+  const RATING_COLOR = { A: '#10b981', B: '#0068b7', C: '#f59e0b', D: '#ef4444', NA: '#94a3b8' };
 
   /* ---------- Helpers ---------- */
   const $ = (s, r = document) => r.querySelector(s);
@@ -438,8 +438,8 @@
     g += `<text x="${W - P.r}" y="${ty - 5}" text-anchor="end" style="fill:var(--orange)">Mục tiêu/tháng ${fmtShort(mt)}</text>`;
     return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Biểu đồ ${esc(k.name)}">
       <defs>
-        <linearGradient id="gOk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#38d0f0"/><stop offset="1" stop-color="#2b5cd6"/></linearGradient>
-        <linearGradient id="gBad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff8a3d"/><stop offset="1" stop-color="#ff5470"/></linearGradient>
+        <linearGradient id="gOk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#26a5e4"/><stop offset="1" stop-color="#0068b7"/></linearGradient>
+        <linearGradient id="gBad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f59e0b"/><stop offset="1" stop-color="#ef4444"/></linearGradient>
       </defs>${g}</svg>`;
   }
 
@@ -459,11 +459,15 @@
         const p = pctOf(k, from, to), a = actualOf(k, from, to);
         rows += `<tr>
           <td><span class="tag ${g.cls}">${g.tag}</span></td>
-          <td><div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div><div class="kpi-meta">${typeTag(k)} ${esc(k.owner || '—')} · ${esc(k.source || '—')}</div></td>
-          <td class="num">${fmt(k.target)} <span class="muted small">${esc(k.unit)}</span></td>
+          <td>
+            <div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div>
+            ${k.desc ? `<div class="kpi-desc small muted" style="margin-top:2px">${esc(k.desc)}</div>` : ''}
+            <div class="kpi-meta" style="margin-top:3px">${typeTag(k)} 👤 ${esc(k.owner || '—')} · 📁 ${esc(k.source || '—')}</div>
+          </td>
+          <td class="num"><b>${fmt(k.target)}</b> <span class="muted small">${esc(k.unit)}</span></td>
           <td class="num"><b>${fmt(it.weight)}%</b></td>
           <td>${it.link || '<span class="muted small">—</span>'}</td>
-          <td class="num">${fmt(a)}</td>
+          <td class="num"><b>${fmt(a)}</b> <span class="muted small">${esc(k.unit)}</span></td>
           <td style="min-width:140px">${pctBar(p)}</td>
           <td>${chip(p)}</td>
           <td class="num" style="white-space:nowrap">${canEdit ? (it.actions || '') : ''}</td>
@@ -746,15 +750,22 @@
       <div class="card">
         <div class="card-head"><span class="section-num">1</span><h2>KPI Tổng IID – tiến độ YTD</h2><span class="tag">${MONTHS[0]} – ${MONTHS[m - 1]}</span></div>
         <div class="kpi-list">
-          ${S.iid.map(k => { const p = pctOf(k, ...P); return `<div class="kpi-line">
-            <div class="row"><div style="flex:1;min-width:0"><div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div><div class="kpi-meta">Mục tiêu ${fmt(k.target)} ${esc(k.unit)} · tỷ trọng ${fmt(k.weight)}% · ${dirTxt(k)}</div></div>${chip(p)}</div>
-            <div class="mt-s">${pctBar(p)}</div></div>`; }).join('') || '<div class="empty">Chưa có KPI IID</div>'}
+          ${S.iid.map(k => {
+            const p = pctOf(k, ...P), a = actualOf(k, ...P);
+            return `<div class="kpi-line">
+            <div class="row"><div style="flex:1;min-width:0">
+              <div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div>
+              ${k.desc ? `<div class="kpi-desc small muted" style="margin-top:2px">${esc(k.desc)}</div>` : ''}
+              <div class="kpi-meta" style="margin-top:3px">Mục tiêu năm: <b>${fmt(k.target)} ${esc(k.unit)}</b> · Thực tế YTD: <b>${fmt(a)} ${esc(k.unit)}</b> · Tỷ trọng: <b>${fmt(k.weight)}%</b></div>
+            </div>${chip(p)}</div>
+            <div class="mt-s">${pctBar(p)}</div></div>`;
+          }).join('') || '<div class="empty">Chưa có KPI IID</div>'}
         </div>
       </div>
       <div class="card">
         <div class="card-head"><span class="section-num emp">3</span><h2>Phân bố xếp loại cá nhân</h2></div>
         <div class="donut-wrap">
-          <div class="donut"><svg viewBox="0 0 150 150"><circle cx="75" cy="75" r="${R0}" stroke="rgba(140,170,255,.1)"/>${circles}</svg>
+          <div class="donut"><svg viewBox="0 0 150 150"><circle cx="75" cy="75" r="${R0}" stroke="#e2e8f0"/>${circles}</svg>
             <div class="center"><div><b>${S.emps.length}</b><small>nhân sự</small></div></div></div>
           <div class="legend">${legend}</div>
         </div>
@@ -792,7 +803,11 @@
     const rows = S.iid.map(k => {
       const p = pctOf(k, ...P);
       return `<tr>
-        <td><div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div><div class="kpi-meta">${esc(k.owner || '—')} · ${esc(k.source || '—')}</div></td>
+        <td>
+          <div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div>
+          ${k.desc ? `<div class="kpi-desc small muted" style="margin-top:2px">${esc(k.desc)}</div>` : ''}
+          <div class="kpi-meta" style="margin-top:2px">${esc(k.owner || '—')} · ${esc(k.source || '—')}</div>
+        </td>
         <td>${typeTag(k)}</td>
         <td class="num">${fmt(k.target)} <span class="muted small">${esc(k.unit)}</span></td>
         <td class="num"><b>${fmt(k.weight)}%</b></td>

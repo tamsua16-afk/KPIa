@@ -3,24 +3,25 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>KPI 2027 – Khối IID | Quản lý & Theo dõi đánh giá KPI</title>
-  <meta name="description" content="Ứng dụng quản lý, cascade và theo dõi đánh giá KPI 2027 của Khối IID: KPI Tổng IID → Bộ phận → Cá nhân, theo dõi hàng tháng và review hàng quý." />
+  <title>Tenten.vn by GMO · KPI 2027 – Khối IID | Quản trị & Đánh giá Hiệu suất</title>
+  <meta name="description" content="Hệ thống quản lý, cascade và đánh giá KPI 2027 Khối IID - Tenten.vn by GMO: Mục tiêu Khối IID → Bộ phận → Cá nhân, theo dõi hàng tháng và review hàng quý." />
+  <link rel="icon" type="image/png" href="assets/tenten-logo.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
-  <div class="bg-orbs" aria-hidden="true"><span></span><span></span><span></span></div>
+  <div class="light-ambient" aria-hidden="true"></div>
 
   <aside class="sidebar" id="sidebar">
     <div class="brand">
-      <div class="brand-logo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>
+      <div class="brand-logo-container">
+        <img src="assets/tenten-logo.png" alt="Tenten.vn by GMO" class="brand-logo-img" />
       </div>
-      <div>
-        <div class="brand-title">KPI 2027</div>
-        <div class="brand-sub">Khối IID</div>
+      <div class="brand-tag-row">
+        <span class="brand-badge-iid">KHỐI IID</span>
+        <span class="brand-badge-year">KPI 2027</span>
       </div>
     </div>
     <nav class="nav" id="nav">
@@ -28,7 +29,7 @@
       <button class="nav-item" data-view="iid" id="nav-iid"><i>①</i>KPI Tổng IID</button>
       <button class="nav-item" data-view="depts" id="nav-depts"><i>②</i>KPI Bộ phận</button>
       <button class="nav-item" data-view="emps" id="nav-emps"><i>③</i>KPI Cá nhân</button>
-      <div class="nav-sep">Vận hành</div>
+      <div class="nav-sep">Vận hành & Đánh giá</div>
       <button class="nav-item" data-view="tracking" id="nav-tracking"><i>▤</i>Theo dõi hàng tháng</button>
       <button class="nav-item" data-view="review" id="nav-review"><i>★</i>Review hàng quý</button>
       <button class="nav-item" data-view="cascade" id="nav-cascade"><i>⋔</i>Cây liên kết KPI</button>
@@ -36,7 +37,10 @@
       <button class="nav-item" data-view="users" id="nav-users"><i>👥</i>Phân quyền & Người dùng</button>
     </nav>
     <div class="sidebar-foot">
-      <div class="motto">“Cùng một logic xuyên suốt — <b>IID → Bộ phận → Cá nhân</b> — để mọi đội ngũ cùng hướng về mục tiêu chung.”</div>
+      <div class="motto">
+        <div class="motto-tag">🎯 NGUYÊN TẮC LIÊN KẾT</div>
+        “Cùng một logic xuyên suốt — <b>IID → Bộ phận → Cá nhân</b> — để toàn đội ngũ Tenten cùng hướng về một kết quả chung.”
+      </div>
     </div>
   </aside>
 
@@ -95,11 +99,11 @@
   <div class="login-backdrop" id="login-overlay" hidden>
     <div class="login-card">
       <div class="login-brand">
-        <div class="brand-logo" style="width:52px;height:52px;margin:0 auto 12px;border-radius:14px">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="28" height="28"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>
+        <div class="login-logo-container">
+          <img src="assets/tenten-logo.png" alt="Tenten.vn by GMO" class="login-logo-img" />
         </div>
-        <h2>KPI 2027 – Khối IID</h2>
-        <p class="small muted" style="margin-top:4px">Đăng nhập tài khoản cá nhân & phân quyền</p>
+        <h2>HỆ THỐNG KPI 2027</h2>
+        <p class="small muted">Khối IID · Cổng quản lý mục tiêu & đánh giá hiệu suất</p>
       </div>
 
       <form id="login-form" class="login-form" novalidate>
