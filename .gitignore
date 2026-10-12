@@ -3,3 +3,6 @@ site-deploy.tar.gz
 iid-kpi/
 qa.cjs
 preview.cjs
+node_modules/
+.package/
+preview.mjs
