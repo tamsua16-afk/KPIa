@@ -235,16 +235,16 @@ function buildSampleData() {
 
   // 4. Danh sách tài khoản người dùng đăng nhập
   const users = [
-    { id: 'u_admin', name: 'Giám đốc Khối IID', email: 'director.iid@gmo.vn', role: 'admin', title: 'Giám đốc Khối IID', deptId: null, empId: null },
-    { id: 'u_mgr_sales', name: 'Nguyễn Minh Tuấn', email: 'tuan.nm@gmo.vn', role: 'manager', title: 'Trưởng phòng Kinh doanh', deptId: 'd_sales', empId: 'emp_tuan' },
-    { id: 'u_mgr_cs', name: 'Trần Thu Hà', email: 'ha.tt@gmo.vn', role: 'manager', title: 'Trưởng Customer Success', deptId: 'd_cs', empId: 'emp_ha' },
-    { id: 'u_mgr_mkt', name: 'Lê Hoàng Nam', email: 'nam.lh@gmo.vn', role: 'manager', title: 'Trưởng Marketing', deptId: 'd_mkt', empId: 'emp_nam' },
-    { id: 'u_mgr_ops', name: 'Phạm Quốc Bảo', email: 'bao.pq@gmo.vn', role: 'manager', title: 'Trưởng Vận hành', deptId: 'd_ops', empId: 'emp_bao' },
-    { id: 'u_lead_cs', name: 'Vũ Đức Anh', email: 'anh.vd@gmo.vn', role: 'leader', title: 'CS Lead', deptId: 'd_cs', empId: 'emp_anh' },
-    { id: 'u_lead_mkt', name: 'Hoàng Mai Linh', email: 'linh.hm@gmo.vn', role: 'leader', title: 'Content Lead', deptId: 'd_mkt', empId: 'emp_linh' },
-    { id: 'u_lead_ops', name: 'Ngô Thanh Sơn', email: 'son.nt@gmo.vn', role: 'leader', title: 'SRE Lead', deptId: 'd_ops', empId: 'emp_son' },
-    { id: 'u_staff_lan', name: 'Đỗ Thị Lan', email: 'lan.dt@gmo.vn', role: 'staff', title: 'Account Executive', deptId: 'd_sales', empId: 'emp_lan' },
-    { id: 'u_staff_huy', name: 'Trần Quốc Huy', email: 'huy.tq@gmo.vn', role: 'staff', title: 'Senior Sales Rep', deptId: 'd_sales', empId: 'emp_huy' }
+    { id: 'u_admin', name: 'Giám đốc Khối IID', email: 'director.iid@gmo.vn', password: 'password123', role: 'admin', title: 'Giám đốc Khối IID', deptId: null, empId: null },
+    { id: 'u_mgr_sales', name: 'Nguyễn Minh Tuấn', email: 'tuan.nm@gmo.vn', password: 'password123', role: 'manager', title: 'Trưởng phòng Kinh doanh', deptId: 'd_sales', empId: 'emp_tuan' },
+    { id: 'u_mgr_cs', name: 'Trần Thu Hà', email: 'ha.tt@gmo.vn', password: 'password123', role: 'manager', title: 'Trưởng Customer Success', deptId: 'd_cs', empId: 'emp_ha' },
+    { id: 'u_mgr_mkt', name: 'Lê Hoàng Nam', email: 'nam.lh@gmo.vn', password: 'password123', role: 'manager', title: 'Trưởng Marketing', deptId: 'd_mkt', empId: 'emp_nam' },
+    { id: 'u_mgr_ops', name: 'Phạm Quốc Bảo', email: 'bao.pq@gmo.vn', password: 'password123', role: 'manager', title: 'Trưởng Vận hành', deptId: 'd_ops', empId: 'emp_bao' },
+    { id: 'u_lead_cs', name: 'Vũ Đức Anh', email: 'anh.vd@gmo.vn', password: 'password123', role: 'leader', title: 'CS Lead', deptId: 'd_cs', empId: 'emp_anh' },
+    { id: 'u_lead_mkt', name: 'Hoàng Mai Linh', email: 'linh.hm@gmo.vn', password: 'password123', role: 'leader', title: 'Content Lead', deptId: 'd_mkt', empId: 'emp_linh' },
+    { id: 'u_lead_ops', name: 'Ngô Thanh Sơn', email: 'son.nt@gmo.vn', password: 'password123', role: 'leader', title: 'SRE Lead', deptId: 'd_ops', empId: 'emp_son' },
+    { id: 'u_staff_lan', name: 'Đỗ Thị Lan', email: 'lan.dt@gmo.vn', password: 'password123', role: 'staff', title: 'Account Executive', deptId: 'd_sales', empId: 'emp_lan' },
+    { id: 'u_staff_huy', name: 'Trần Quốc Huy', email: 'huy.tq@gmo.vn', password: 'password123', role: 'staff', title: 'Senior Sales Rep', deptId: 'd_sales', empId: 'emp_huy' }
   ];
 
   return {

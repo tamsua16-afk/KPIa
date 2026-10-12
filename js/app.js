@@ -6,6 +6,11 @@
      + Leader (Trưởng nhóm): Quản lý nhóm & thành viên trực thuộc
      + Staff (Nhân viên): Chỉ xem KPI của mình, bảng nhập liệu của mình,
        review của mình và mục tiêu chung phòng ban để đóng góp
+   - Xác thực Email & Mật khẩu (Authentication & Change Password):
+     + Cấp tài khoản theo Email + Mật khẩu
+     + Cá nhân tự đổi mật khẩu được
+     + Admin có quyền reset mật khẩu
+     + Màn hình đăng nhập & Đăng xuất
    - Tự động tổng hợp KPI (Auto Roll-up: Staff → Bộ phận → Khối)
    - Lưu trữ localStorage, xuất / nhập JSON
    ========================================================= */
@@ -55,6 +60,7 @@
     d.reviews = d.reviews || {};
     d.currentMonth = clamp(+d.currentMonth || 12, 1, 12);
     d.users = d.users || [];
+    d.users.forEach(u => { u.password = u.password || 'password123'; });
     d.currentUserId = d.currentUserId || (d.users[0]?.id || 'u_admin');
     d.iid.forEach(normKpi);
     d.depts.forEach(x => { x.iidLinks = x.iidLinks || []; x.kpis = (x.kpis || []).map(normKpi); });
@@ -77,7 +83,7 @@
   /* ---------- Phân quyền & Giới hạn dữ liệu (RBAC Data Scoping) ---------- */
   function curUser() {
     return S.users.find(u => u.id === S.currentUserId) || S.users[0] || {
-      id: 'u_admin', name: 'Giám đốc Khối', role: 'admin', title: 'Giám đốc Khối'
+      id: 'u_admin', name: 'Giám đốc Khối', email: 'director.iid@gmo.vn', password: 'password123', role: 'admin', title: 'Giám đốc Khối'
     };
   }
   const roleOf = u => ROLES[u?.role] || ROLES.staff;
@@ -85,7 +91,6 @@
   const isMgr = (deptId) => isAdm() || (curUser().role === 'manager' && (!deptId || curUser().deptId === deptId));
   const isStaff = () => curUser().role === 'staff';
 
-  // Lấy các Bộ phận được phép xem
   function getVisibleDepts() {
     const u = curUser();
     if (u.role === 'admin') return S.depts;
@@ -93,13 +98,12 @@
     return S.depts;
   }
 
-  // Lấy danh sách Nhân sự được phép xem
   function getVisibleEmps() {
     const u = curUser();
     if (u.role === 'admin') return S.emps;
     if (u.role === 'manager') return S.emps.filter(e => e.deptId === u.deptId);
     if (u.role === 'leader') return S.emps.filter(e => e.deptId === u.deptId);
-    if (u.role === 'staff') return S.emps.filter(e => e.id === u.empId); // Chỉ chính mình!
+    if (u.role === 'staff') return S.emps.filter(e => e.id === u.empId);
     return [];
   }
 
@@ -119,14 +123,14 @@
   }
   function canInputMonthly(scope, eid, kid) {
     const k = container(scope, eid)?.find(x => x.id === kid);
-    if (k && k.rollupMode && k.rollupMode !== 'manual') return false; // KPI tự động tổng hợp thì không sửa tay
+    if (k && k.rollupMode && k.rollupMode !== 'manual') return false;
     if (scope === 'iid') return isAdm();
     if (scope === 'dept') return canManageDept(eid);
     if (scope === 'emp') {
       if (isAdm()) return true;
       const e = empById(eid);
       if (!e) return false;
-      if (curUser().empId === eid) return true; // Nhân viên tự nhập số liệu của mình
+      if (curUser().empId === eid) return true;
       if (curUser().role === 'manager' && curUser().deptId === e.deptId) return true;
       if (curUser().role === 'leader' && curUser().deptId === e.deptId) return true;
     }
@@ -149,7 +153,6 @@
 
   /* ---------- Auto Roll-up Engine ---------- */
   function computeRollups() {
-    // 1. Roll-up từ KPI cá nhân lên KPI bộ phận
     S.depts.forEach(d => {
       d.kpis.forEach(k => {
         if (!k.rollupMode || k.rollupMode === 'manual') return;
@@ -159,11 +162,9 @@
         });
         if (!linkedEmpsKpi.length) return;
 
-        // Rollup Target
         if (k.rollupMode === 'rollup_sum') k.target = sum(linkedEmpsKpi.map(x => x.target));
         else if (k.rollupMode === 'rollup_avg') k.target = Math.round(sum(linkedEmpsKpi.map(x => x.target)) / linkedEmpsKpi.length * 100) / 100;
 
-        // Rollup Monthly
         for (let m = 0; m < 12; m++) {
           const vals = linkedEmpsKpi.map(x => x.monthly[m]).filter(isNum).map(Number);
           if (!vals.length) k.monthly[m] = null;
@@ -173,7 +174,6 @@
       });
     });
 
-    // 2. Roll-up từ KPI bộ phận lên KPI Tổng IID
     S.iid.forEach(k => {
       if (!k.rollupMode || k.rollupMode === 'manual') return;
       const linkedDeptKpi = [];
@@ -182,11 +182,9 @@
       });
       if (!linkedDeptKpi.length) return;
 
-      // Rollup Target
       if (k.rollupMode === 'rollup_sum') k.target = sum(linkedDeptKpi.map(x => x.target));
       else if (k.rollupMode === 'rollup_avg') k.target = Math.round(sum(linkedDeptKpi.map(x => x.target)) / linkedDeptKpi.length * 100) / 100;
 
-      // Rollup Monthly
       for (let m = 0; m < 12; m++) {
         const vals = linkedDeptKpi.map(x => x.monthly[m]).filter(isNum).map(Number);
         if (!vals.length) k.monthly[m] = null;
@@ -277,7 +275,6 @@
       if (!(+k.weight > 0)) I('warn', sc, `KPI "${k.name}" có tỷ trọng 0%`, 'KPI không có tỷ trọng sẽ không được tính điểm.', nav);
     };
 
-    // IID
     let n0 = issues.length;
     const iw = sum(S.iid.map(k => k.weight));
     const navIid = { view: 'iid' };
@@ -286,7 +283,6 @@
     S.iid.forEach(k => fieldChecks(k, 'KPI Tổng IID', navIid));
     if (issues.length === n0) oks.push(['KPI Tổng IID', `${S.iid.length} KPI · tổng tỷ trọng 100%`]);
 
-    // Bộ phận
     const R = RULES.dept;
     S.depts.forEach(d => {
       n0 = issues.length;
@@ -300,7 +296,6 @@
       if (issues.length === n0) oks.push([sc, `IID ${fmt(a)}% · riêng ${fmt(b)}% · ${d.kpis.length} KPI`]);
     });
 
-    // Cá nhân
     const E = RULES.emp;
     S.emps.forEach(e => {
       n0 = issues.length;
@@ -345,11 +340,10 @@
         banner.hidden = true;
       } else {
         banner.hidden = false;
-        $('#role-banner-text').innerHTML = `Đang xem với vai trò: <b>${esc(u.name)} (${r.badge})</b> – ${esc(u.title || '')}. Dữ liệu được tinh gọn theo đúng phạm vi trách nhiệm.`;
+        $('#role-banner-text').innerHTML = `Đang đăng nhập: <b>${esc(u.name)} (${r.badge})</b> – ${esc(u.title || '')}.`;
       }
     }
 
-    // 1. Phân quyền hiển thị Menu Sidebar
     const navUsers = $('#nav-users');
     if (navUsers) navUsers.style.display = isAdm() ? '' : 'none';
 
@@ -369,7 +363,6 @@
       else navDepts.innerHTML = `<i>②</i>KPI Bộ phận`;
     }
 
-    // 2. Phân quyền các nút thao tác hệ thống trên Topbar
     const btnImport = $('#btn-import');
     if (btnImport) btnImport.style.display = isAdm() ? '' : 'none';
     const btnReset = $('#btn-reset');
@@ -498,17 +491,15 @@
     review: ['Review hàng quý', 'Tự đánh giá → Quản lý review → Chốt kết quả theo quý'],
     cascade: ['Cây liên kết KPI', 'Kiểm tra liên kết đa chiều: Cascade mục tiêu & Roll-up thực tế'],
     rules: ['Kiểm tra nguyên tắc', 'Rà soát tỷ trọng, số lượng KPI và liên kết theo quy định'],
-    users: ['Phân quyền & Người dùng', 'Quản lý tài khoản, vai trò & phân cấp quản lý']
+    users: ['Phân quyền & Người dùng', 'Quản lý tài khoản, mật khẩu & phân cấp quản lý']
   };
 
-  /* ---------- Dashboard Tùy biến theo Role ---------- */
+  /* ---------- Dashboard ---------- */
   function viewDashboard() {
     const P = ytd(), m = S.currentMonth, curQ = qOf(m);
     const u = curUser(), r = roleOf(u);
 
-    // ==========================================
-    // 1. GÓC NHÌN DÀNH CHO NHÂN VIÊN (STAFF)
-    // ==========================================
+    // 1. GÓC NHÌN NHÂN VIÊN (STAFF)
     if (u.role === 'staff') {
       const myEmp = empById(u.empId);
       if (!myEmp) return `<div class="card empty">Chưa tìm thấy hồ sơ cá nhân liên kết với tài khoản này.</div>`;
@@ -531,6 +522,7 @@
           <div class="row mt" style="flex-wrap:wrap">
             <button class="btn" data-action="goto" data-view="tracking">▤ Nhập số liệu tháng ${MONTHS[m - 1]}</button>
             <button class="btn ghost" data-action="review-edit" data-type="emp" data-eid="${myEmp.id}">★ Tự đánh giá Quý ${curQ}</button>
+            <button class="btn ghost" data-action="change-pwd-modal">🔑 Đổi mật khẩu</button>
           </div>
         </div>
         <div class="principles">
@@ -600,9 +592,7 @@
       </section>`;
     }
 
-    // ==========================================
-    // 2. GÓC NHÌN DÀNH CHO MANAGER (TRƯỞNG BỘ PHẬN)
-    // ==========================================
+    // 2. GÓC NHÌN MANAGER (TRƯỞNG BỘ PHẬN)
     if (u.role === 'manager' && u.deptId) {
       const myDept = deptById(u.deptId);
       const sDept = myDept ? deptScore(myDept, ...P) : null;
@@ -621,6 +611,7 @@
           <div class="row mt" style="flex-wrap:wrap">
             <button class="btn" data-action="goto" data-view="depts" data-dept="${myDept?.id}">② KPI Bộ phận</button>
             <button class="btn ghost" data-action="goto" data-view="review">★ Đánh giá Quý ${curQ} cho team</button>
+            <button class="btn ghost" data-action="change-pwd-modal">🔑 Đổi mật khẩu</button>
           </div>
         </div>
         <div class="principles">
@@ -691,9 +682,7 @@
       </section>`;
     }
 
-    // ==========================================
     // 3. GÓC NHÌN ADMIN (GIÁM ĐỐC KHỐI)
-    // ==========================================
     const sIid = iidScore(...P);
     const rr = checkRules();
     const deptKpiN = sum(S.depts.map(d => d.kpis.length));
@@ -735,7 +724,7 @@
         <div class="row mt" style="flex-wrap:wrap">
           <button class="btn" data-action="goto" data-view="tracking" id="hero-tracking">▤ Cập nhật số liệu ${MONTHS[m - 1]}</button>
           <button class="btn ghost" data-action="goto" data-view="review" id="hero-review">★ Review Quý ${curQ}</button>
-          <button class="btn ghost" data-action="switch-user-modal">👤 Chuyển đổi vai trò</button>
+          <button class="btn ghost" data-action="account-modal">👤 Tài khoản của tôi</button>
         </div>
       </div>
       <div class="principles">
@@ -749,7 +738,7 @@
     <section class="grid g-4 mt">
       <div class="card stat"><span class="glow" style="background:var(--blue)"></span><div class="label">Điểm KPI Tổng IID</div><div class="value">${pctTxt(sIid)}</div><div class="hint">YTD đến ${MONTHS[m - 1]} · ${chip(sIid)}</div></div>
       <div class="card stat"><span class="glow" style="background:var(--teal)"></span><div class="label">Bộ phận</div><div class="value">${S.depts.length}</div><div class="hint">${deptKpiN} KPI riêng · điểm TB ${pctTxt(dScores.length ? sum(dScores) / dScores.length : null)}</div></div>
-      <div class="card stat"><span class="glow" style="background:var(--sky)"></span><div class="label">Nhân sự & Tài khoản</div><div class="value">${S.emps.length}</div><div class="hint">${S.users.length} tài khoản phân quyền</div></div>
+      <div class="card stat"><span class="glow" style="background:var(--sky)"></span><div class="label">Nhân sự & Tài khoản</div><div class="value">${S.emps.length}</div><div class="hint">${S.users.length} tài khoản cấp email & MK</div></div>
       <div class="card stat entity" data-action="goto" data-view="rules"><span class="glow" style="background:${rr.errors ? 'var(--red)' : 'var(--green)'}"></span><div class="label">Nguyên tắc</div><div class="value" style="color:${rr.errors ? 'var(--red)' : 'var(--green)'}">${rr.errors ? rr.errors + ' lỗi' : 'Đạt'}</div><div class="hint">${rr.warns} cảnh báo · bấm để xem chi tiết</div></div>
     </section>
 
@@ -852,7 +841,7 @@
     </section>`;
   }
 
-  /* ---------- KPI Bộ phận (Chỉ hiển thị bộ phận liên quan) ---------- */
+  /* ---------- KPI Bộ phận ---------- */
   function deptCard(d, P) {
     const s = deptScore(d, ...P);
     const a = sum(d.iidLinks.map(l => l.weight)), b = sum(d.kpis.map(k => k.weight));
@@ -915,7 +904,7 @@
     ${detail}`;
   }
 
-  /* ---------- KPI Cá nhân (Staff chỉ xem chính mình) ---------- */
+  /* ---------- KPI Cá nhân ---------- */
   function empCard(e, P) {
     const s = empScore(e, ...P), color = empColor(e);
     const a = sum(e.iidLinks.map(l => l.weight)), b = sum(e.deptLinks.map(l => l.weight)), c = sum(e.kpis.map(k => k.weight));
@@ -972,10 +961,7 @@
       </section>`;
     }
 
-    // Nếu là Staff: không hiển thị danh sách hay tabs, chỉ hiện duy nhất KPI của mình
-    if (isStaff()) {
-      return detail;
-    }
+    if (isStaff()) return detail;
 
     const tabs = isAdm()
       ? [['all', 'Tất cả'], ...S.depts.map(x => [x.id, x.name])].map(([v, l]) => `<button class="${UI.empFilter === v ? 'active' : ''}" data-action="emp-filter" data-val="${v}">${esc(l)}</button>`).join('')
@@ -991,15 +977,13 @@
     ${detail}`;
   }
 
-  /* ---------- Theo dõi hàng tháng (Tracking Scoped) ---------- */
+  /* ---------- Theo dõi hàng tháng ---------- */
   function trackTarget() {
     const u = curUser();
-    // 1. Staff: khóa chết ở cá nhân mình
     if (u.role === 'staff') {
       const e = empById(u.empId);
       return e ? { scope: 'emp', eid: e.id, kpis: e.kpis, items: empItems(e), name: `Cá nhân: ${e.name}` } : null;
     }
-    // 2. Manager: chỉ có IID, Bộ phận mình hoặc nhân sự thuộc bộ phận mình
     if (u.role === 'manager') {
       if (UI.trackLevel === 'iid') return { scope: 'iid', eid: '', kpis: S.iid, items: iidItems(), name: 'KPI Tổng IID (Xem)' };
       if (UI.trackLevel === 'dept') {
@@ -1011,7 +995,6 @@
       const e = empById(UI.trackEmp);
       return e ? { scope: 'emp', eid: e.id, kpis: e.kpis, items: empItems(e), name: e.name } : null;
     }
-    // 3. Admin: toàn quyền
     if (UI.trackLevel === 'iid') return { scope: 'iid', eid: '', kpis: S.iid, items: iidItems(), name: 'KPI Tổng IID' };
     if (UI.trackLevel === 'dept') {
       if (!deptById(UI.trackDept)) UI.trackDept = S.depts[0]?.id;
@@ -1040,7 +1023,6 @@
   function viewTracking() {
     const u = curUser();
 
-    // STAFF: Chỉ hiển thị bảng của chính mình!
     if (u.role === 'staff') {
       const T = trackTarget();
       if (!T) return `<div class="card empty">Chưa tìm thấy dữ liệu cá nhân.</div>`;
@@ -1070,7 +1052,6 @@
       </section>`;
     }
 
-    // MANAGER / ADMIN:
     let tabs = '';
     if (isAdm()) {
       tabs = [['iid', '① KPI Tổng IID'], ['dept', '② Bộ phận'], ['emp', '③ Cá nhân']]
@@ -1146,7 +1127,7 @@
     if (T && box) box.innerHTML = trackSummary(T);
   }
 
-  /* ---------- Review hàng quý (Scoped per Role) ---------- */
+  /* ---------- Review hàng quý ---------- */
   const reviewKey = (type, id, q) => `${type}_${id}_Q${q}`;
   const getReview = (type, id, q) => S.reviews[reviewKey(type, id, q)] || { status: 'todo', self: '', mgr: '', plan: '', adjust: '' };
   const statusIdx = s => REVIEW_STATUS.findIndex(x => x[0] === s);
@@ -1155,7 +1136,6 @@
     const q = UI.reviewQ, Q = QUARTERS[q - 1], R = qRange(q), started = Q.from <= S.currentMonth;
     const u = curUser();
 
-    // 1. Phân loại danh sách hiển thị theo quyền
     let ents = [];
     if (u.role === 'staff') {
       const e = empById(u.empId);
@@ -1167,7 +1147,6 @@
         ents.push({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: q > 1 ? empScore(e, ...qRange(q - 1)) : null });
       });
     } else {
-      // Admin: Toàn bộ
       ents = [
         ...S.depts.map(d => ({ type: 'dept', id: d.id, name: d.name, sub: 'Trưởng BP: ' + (d.leader || '—'), av: avatar(deptInitials(d), d.color, 34), score: started ? deptScore(d, ...R) : null, prev: q > 1 ? deptScore(d, ...qRange(q - 1)) : null })),
         ...S.emps.map(e => ({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: q > 1 ? empScore(e, ...qRange(q - 1)) : null }))
@@ -1310,7 +1289,7 @@
     </section>`;
   }
 
-  /* ---------- Kiểm tra nguyên tắc (Dành cho Admin & Manager) ---------- */
+  /* ---------- Kiểm tra nguyên tắc ---------- */
   function viewRules() {
     if (isStaff()) return `<div class="card empty">Trang kiểm tra nguyên tắc dành cho cấp Quản lý và Giám đốc Khối.</div>`;
     const r = checkRules();
@@ -1333,7 +1312,7 @@
     <section class="card mt"><div class="card-head"><h2>Đã đạt nguyên tắc</h2><span class="tag good">${r.oks.length}</span></div>${oks}</div>`;
   }
 
-  /* ---------- Phân quyền & Người dùng (Chỉ Admin) ---------- */
+  /* ---------- Phân quyền, Tài khoản & Mật khẩu ---------- */
   function viewUsers() {
     if (!isAdm()) return `<div class="card empty">Tính năng quản trị người dùng chỉ dành cho Admin (Giám đốc Khối).</div>`;
     const rolesList = Object.values(ROLES);
@@ -1345,16 +1324,18 @@
         <td>
           <div class="row">
             ${avatar((u.name || '?').slice(0, 2).toUpperCase(), d?.color || 'var(--blue)', 34)}
-            <div><div class="kpi-name">${esc(u.name)} ${isCur ? '<span class="tag good">Đang chọn</span>' : ''}</div>
+            <div><div class="kpi-name">${esc(u.name)} ${isCur ? '<span class="tag good">Đang dùng</span>' : ''}</div>
             <div class="kpi-meta">${esc(u.email || '—')}</div></div>
           </div>
         </td>
         <td><span class="role-pill ${r.id}">${r.badge}</span></td>
         <td>${esc(u.title || '—')}</td>
         <td>${d ? `<span class="tag dept">${esc(d.name)}</span>` : '<span class="muted small">Toàn Khối (Khối IID)</span>'}</td>
+        <td><span class="tag">••••••••</span></td>
         <td class="num">
-          <button class="btn sm ${isCur ? 'ghost' : ''}" data-action="switch-user" data-uid="${u.id}">${isCur ? '✓ Đang dùng' : 'Đăng nhập vai trò này'}</button>
-          <button class="icon-btn" title="Sửa" data-action="edit-user" data-uid="${u.id}">✎</button>
+          <button class="btn sm ${isCur ? 'ghost' : ''}" data-action="switch-user" data-uid="${u.id}">${isCur ? '✓ Đang dùng' : 'Đăng nhập'}</button>
+          <button class="btn ghost sm" title="Đặt lại mật khẩu về password123" data-action="admin-reset-pwd" data-uid="${u.id}">Reset MK</button>
+          <button class="icon-btn" title="Sửa tài khoản" data-action="edit-user" data-uid="${u.id}">✎</button>
         </td>
       </tr>`;
     }).join('');
@@ -1362,11 +1343,11 @@
     return `
     <section class="card hero">
       <div>
-        <h2>Quản lý Phân quyền & Người dùng</h2>
-        <p>Quản trị danh sách tài khoản và phân quyền cho 4 cấp: Admin, Manager, Leader, Staff.</p>
+        <h2>Quản lý Tài khoản & Phân quyền</h2>
+        <p>Cấp tài khoản theo Email và Mật khẩu cho từng nhân sự. Mỗi cá nhân có thể tự đổi mật khẩu, hoặc Admin có quyền đặt lại mật khẩu về mặc định.</p>
         <div class="row mt">
-          <button class="btn" data-action="add-user">＋ Thêm tài khoản</button>
-          <button class="btn ghost" data-action="switch-user-modal">👤 Chuyển đổi vai trò nhanh</button>
+          <button class="btn" data-action="add-user">＋ Cấp tài khoản mới</button>
+          <button class="btn ghost" data-action="account-modal">👤 Tài khoản của tôi</button>
         </div>
       </div>
       <div class="principles">
@@ -1378,11 +1359,11 @@
     </section>
     <section class="card mt">
       <div class="card-head">
-        <h2>Danh sách tài khoản & vai trò</h2>
+        <h2>Danh sách tài khoản cấp Email & Mật khẩu</h2>
         <span class="tag">${S.users.length} tài khoản</span>
       </div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Họ tên & Email</th><th>Vai trò</th><th>Chức danh</th><th>Đơn vị phụ trách</th><th class="num">Thao tác</th></tr></thead>
+        <thead><tr><th>Họ tên & Email</th><th>Vai trò</th><th>Chức danh</th><th>Đơn vị phụ trách</th><th>Mật khẩu</th><th class="num">Thao tác</th></tr></thead>
         <tbody>${userRows}</tbody>
       </table></div>
     </section>`;
@@ -1418,7 +1399,7 @@
   }
 
   /* =========================================================
-     MODAL & FORMS
+     MODAL & FORMS (ĐỔI MẬT KHẨU, ACCOUNT, V.V.)
      ========================================================= */
   let modalSubmit = null, modalInput = null;
   function openModal(title, html, onSubmit, onInput) {
@@ -1435,7 +1416,118 @@
   const field = (label, inner, full = false, help = '') => `<div class="field ${full ? 'full' : ''}"><label>${label}</label>${inner}${help ? `<span class="help">${help}</span>` : ''}</div>`;
   const opt = (v, l, sel) => `<option value="${esc(v)}" ${sel ? 'selected' : ''}>${esc(l)}</option>`;
 
-  /* ---------- Switch User Modal ---------- */
+  /* ---------- Modal Quản lý Tài khoản Cá nhân (Account Modal) ---------- */
+  function accountModal() {
+    const u = curUser();
+    const r = roleOf(u);
+    const d = deptById(u.deptId);
+
+    openModal('👤 Tài khoản của bạn', `
+      <div class="field full">
+        <div class="profile-modal-card">
+          ${avatar((u.name || '?').slice(0, 2).toUpperCase(), d?.color || 'var(--blue)', 48)}
+          <div style="flex:1">
+            <h3 style="font-size:16px">${esc(u.name)}</h3>
+            <div class="small muted" style="margin-top:2px">${esc(u.email)}</div>
+            <div class="row" style="margin-top:6px;gap:6px">
+              <span class="role-pill ${r.id}">${r.badge}</span>
+              <span class="tag">${esc(u.title || '')}</span>
+              ${d ? `<span class="tag dept">${esc(d.name)}</span>` : '<span class="tag iid">Toàn Khối IID</span>'}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="field full">
+        <div class="profile-actions-grid">
+          <button type="button" class="btn" data-action="change-pwd-modal">🔑 Đổi mật khẩu của tôi</button>
+          <button type="button" class="btn ghost" data-action="switch-user-modal">👥 Đổi tài khoản (Demo)</button>
+          <button type="button" class="btn ghost danger-hover" data-action="do-logout" style="grid-column: 1 / -1">🚪 Đăng xuất khỏi hệ thống</button>
+        </div>
+      </div>
+    `, () => true);
+  }
+
+  /* ---------- Modal Đổi Mật Khẩu (Change Password) ---------- */
+  function changePasswordModal() {
+    const u = curUser();
+    openModal('🔑 Đổi mật khẩu cá nhân', `
+      <div class="field full"><span class="help">Đổi mật khẩu cho tài khoản <b>${esc(u.email)}</b> (${esc(u.name)}).</span></div>
+      ${field('Mật khẩu hiện tại *', `<input type="password" name="oldPassword" required placeholder="Nhập mật khẩu hiện tại" autocomplete="current-password" id="f-old-pwd">`, true)}
+      ${field('Mật khẩu mới (tối thiểu 6 ký tự) *', `<input type="password" name="newPassword" required minlength="6" placeholder="Nhập mật khẩu mới" autocomplete="new-password" id="f-new-pwd">`, true)}
+      ${field('Xác nhận mật khẩu mới *', `<input type="password" name="confirmPassword" required minlength="6" placeholder="Nhập lại mật khẩu mới" autocomplete="new-password" id="f-confirm-pwd">`, true)}
+    `, fd => {
+      const oldPass = fd.get('oldPassword');
+      const newPass = fd.get('newPassword');
+      const confirmPass = fd.get('confirmPassword');
+
+      if (oldPass !== u.password) {
+        toast('Mật khẩu hiện tại không chính xác!', true);
+        return false;
+      }
+      if (!newPass || newPass.length < 6) {
+        toast('Mật khẩu mới phải có ít nhất 6 ký tự!', true);
+        return false;
+      }
+      if (newPass !== confirmPass) {
+        toast('Mật khẩu mới và xác nhận mật khẩu không khớp!', true);
+        return false;
+      }
+
+      u.password = newPass;
+      save();
+      toast('✅ Đã đổi mật khẩu thành công! Mật khẩu mới đã được cập nhật.');
+      return true;
+    });
+  }
+
+  /* ---------- Màn hình Đăng nhập (Login Overlay) ---------- */
+  function showLoginOverlay() {
+    const overlay = $('#login-overlay');
+    if (!overlay) return;
+    overlay.hidden = false;
+
+    // Render danh sách tài khoản demo tiện lợi
+    const demoGrid = $('#demo-accounts-grid');
+    if (demoGrid) {
+      demoGrid.innerHTML = [
+        { label: 'Admin (Giám đốc Khối)', email: 'director.iid@gmo.vn', badge: '👑 Admin' },
+        { label: 'Manager (Kinh doanh)', email: 'tuan.nm@gmo.vn', badge: '💼 Manager' },
+        { label: 'Leader (Marketing)', email: 'linh.hm@gmo.vn', badge: '🎖️ Leader' },
+        { label: 'Staff (Account Exec)', email: 'lan.dt@gmo.vn', badge: '👤 Staff' }
+      ].map(a => `<button type="button" class="demo-acc-btn" data-action="quick-login" data-email="${a.email}">
+        <span class="role-pill" style="font-size:10px;padding:1px 6px">${a.badge}</span>
+        <div><b>${a.email}</b><span>Mật khẩu: password123</span></div>
+      </button>`).join('');
+    }
+
+    $('#login-email')?.focus();
+  }
+  function hideLoginOverlay() {
+    const overlay = $('#login-overlay');
+    if (overlay) overlay.hidden = true;
+  }
+
+  function handleLogin(email, password) {
+    const trimmedEmail = String(email || '').trim().toLowerCase();
+    const u = S.users.find(x => x.email.toLowerCase() === trimmedEmail);
+    if (!u) {
+      toast('Email không tồn tại trong hệ thống!', true);
+      return false;
+    }
+    if (u.password !== password) {
+      toast('Mật khẩu không chính xác! Vui lòng thử lại.', true);
+      return false;
+    }
+
+    S.currentUserId = u.id;
+    save();
+    hideLoginOverlay();
+    render(true);
+    toast(`✅ Đăng nhập thành công! Xin chào ${u.name}`);
+    return true;
+  }
+
+  /* ---------- Switch User Modal (Demo Selector) ---------- */
   function switchUserModal() {
     const items = S.users.map(u => {
       const r = roleOf(u);
@@ -1445,16 +1537,55 @@
         ${avatar((u.name || '?').slice(0, 2).toUpperCase(), d?.color || 'var(--blue)', 38)}
         <div style="flex:1">
           <div class="row"><b>${esc(u.name)}</b> <span class="role-pill ${r.id}">${r.badge}</span></div>
-          <div class="small muted">${esc(u.title || '')} · ${d ? esc(d.name) : 'Toàn Khối IID'}</div>
+          <div class="small muted">${esc(u.email)} · ${d ? esc(d.name) : 'Toàn Khối IID'}</div>
         </div>
         ${isCur ? '<span class="tag good">Đang chọn</span>' : '<button class="btn sm ghost">Chọn</button>'}
       </div>`;
     }).join('');
 
-    openModal('👤 Chuyển đổi tài khoản & Vai trò kiểm thử', `
-      <div class="field full"><span class="help">Chọn một tài khoản để kiểm tra giao diện và quyền truy cập thực tế. Dữ liệu sẽ được lọc chính xác theo trách nhiệm của người đó.</span></div>
+    openModal('👥 Chuyển đổi tài khoản (Demo kiểm thử)', `
+      <div class="field full"><span class="help">Chọn nhanh tài khoản để kiểm tra góc nhìn và quyền hạn tương ứng.</span></div>
       <div class="user-select-list">${items}</div>
     `, () => true);
+  }
+
+  function userModal(uidToEdit) {
+    if (!isAdm()) return;
+    const old = uidToEdit ? S.users.find(x => x.id === uidToEdit) : null;
+    const u = old || { name: '', email: '', password: 'password123', role: 'staff', title: '', deptId: S.depts[0]?.id };
+
+    openModal(old ? '✎ Sửa thông tin tài khoản' : '＋ Cấp tài khoản mới', `
+      ${field('Họ và tên *', `<input type="text" name="name" required value="${esc(u.name)}" placeholder="VD: Nguyễn Văn A">`, true)}
+      ${field('Email công việc *', `<input type="email" name="email" required value="${esc(u.email)}" placeholder="VD: an.nv@gmo.vn">`, true)}
+      ${field('Mật khẩu khởi tạo *', `<input type="text" name="password" required value="${esc(u.password || 'password123')}" placeholder="Mật khẩu khởi tạo">`, true, 'Người dùng có thể tự đổi mật khẩu sau khi đăng nhập')}
+      ${field('Vai trò phân quyền *', `<select name="role">
+        ${Object.values(ROLES).map(r => opt(r.id, `${r.badge} (${r.title})`, u.role === r.id)).join('')}
+      </select>`)}
+      ${field('Chức danh công việc', `<input type="text" name="title" value="${esc(u.title)}" placeholder="VD: Chuyên viên kinh doanh">`)}
+      ${field('Bộ phận trực thuộc', `<select name="deptId">
+        <option value="">— Toàn Khối (Khối IID) —</option>
+        ${S.depts.map(d => opt(d.id, d.name, d.id === u.deptId)).join('')}
+      </select>`, true)}
+    `, fd => {
+      const v = Object.fromEntries(fd);
+      if (!v.name.trim() || !v.email.trim() || !v.password.trim()) {
+        toast('Vui lòng điền đầy đủ Họ tên, Email và Mật khẩu!', true);
+        return false;
+      }
+      if (old) {
+        Object.assign(old, {
+          name: v.name.trim(), email: v.email.trim(), password: v.password.trim(),
+          role: v.role, title: v.title.trim(), deptId: v.deptId || null
+        });
+      } else {
+        const nu = {
+          id: uid('u'), name: v.name.trim(), email: v.email.trim(), password: v.password.trim(),
+          role: v.role, title: v.title.trim(), deptId: v.deptId || null, empId: null
+        };
+        S.users.push(nu);
+      }
+      save(); render(); toast(old ? 'Đã cập nhật tài khoản!' : 'Đã cấp tài khoản thành công!');
+    });
   }
 
   function kpiModal(scope, eid, kid) {
@@ -1686,7 +1817,16 @@
       case 'import': $('#import-file').click(); break;
       case 'reset': resetData(); break;
       case 'close-modal': closeModal(); break;
+
+      // Tài khoản & Mật khẩu
+      case 'account-modal': accountModal(); break;
+      case 'change-pwd-modal': changePasswordModal(); break;
       case 'switch-user-modal': switchUserModal(); break;
+      case 'do-logout':
+        closeModal();
+        showLoginOverlay();
+        toast('Đã đăng xuất khỏi tài khoản.');
+        break;
       case 'switch-to-admin':
         S.currentUserId = 'u_admin';
         UI.selDept = UI.selEmp = null;
@@ -1703,6 +1843,29 @@
         }
         break;
       }
+      case 'admin-reset-pwd': {
+        if (!isAdm()) break;
+        const u = S.users.find(x => x.id === ds.uid);
+        if (u && confirm(`Đặt lại mật khẩu cho tài khoản "${u.name}" (${u.email}) về "password123"?`)) {
+          u.password = 'password123';
+          save(); render();
+          toast(`Đã đặt lại mật khẩu của ${u.name} về "password123"`);
+        }
+        break;
+      }
+      case 'add-user': userModal(); break;
+      case 'edit-user': userModal(ds.uid); break;
+
+      // Quick login từ màn hình đăng nhập
+      case 'quick-login': {
+        const email = ds.email;
+        $('#login-email').value = email;
+        $('#login-password').value = 'password123';
+        handleLogin(email, 'password123');
+        break;
+      }
+
+      // KPI & Bộ phận
       case 'add-kpi': kpiModal(ds.scope, ds.eid); break;
       case 'edit-kpi': kpiModal(ds.scope, ds.eid, ds.kid); break;
       case 'del-kpi': deleteKpi(ds.scope, ds.eid, ds.kid); break;
@@ -1756,6 +1919,21 @@
   document.addEventListener('keydown', ev => {
     if (ev.key === 'Escape' && !$('#modal').hidden) closeModal();
     if (ev.key === 'Enter' && ev.target.classList?.contains('cell-input')) { ev.preventDefault(); ev.target.blur(); }
+  });
+
+  // Login form submission
+  $('#login-form')?.addEventListener('submit', ev => {
+    ev.preventDefault();
+    const email = $('#login-email')?.value;
+    const pwd = $('#login-password')?.value;
+    handleLogin(email, pwd);
+  });
+
+  // Toggle password visibility
+  $('#btn-toggle-pwd')?.addEventListener('click', () => {
+    const inp = $('#login-password');
+    if (!inp) return;
+    inp.type = inp.type === 'password' ? 'text' : 'password';
   });
 
   const form = $('#modal-form');
