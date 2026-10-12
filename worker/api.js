@@ -4,7 +4,7 @@ const roles=['admin','manager','contributor','viewer'];
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status})};
 const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'}});
 const mail=s=>String(s||'').trim().toLowerCase();
-function hasScope(user,k){return user.role==='admin'||user.role==='manager'&&user.team===k.team||user.role==='contributor'&&mail(k.ownerEmail)===user.email;}
+function hasScope(user,k){return user.role==='admin'||user.role==='manager'&&k.level!=='IID'&&user.team===k.team||user.role==='contributor'&&mail(k.ownerEmail)===user.email;}
 function unlocked(s,m){if(Object.entries(s.reviews).some(([key,r])=>key.startsWith(Math.ceil(m/3)+'|')&&r.status==='Đã đánh giá'))fail('Quý này đã chốt đánh giá. Quản trị cần mở lại trước khi sửa dữ liệu.',423);}
 export function applyOperation(s,op,user){
   if(user.role==='viewer')fail('Tài khoản chỉ có quyền xem.',403);
@@ -36,3 +36,4 @@ export async function api(request,env){try{
   if(row.version!==b.version)fail('Dữ liệu đã được người khác cập nhật. Tải lại trước khi lưu; nội dung bạn nhập vẫn được giữ.',409);
   let state=applyOperation(KPI.migrate(JSON.parse(row.data)),b.op,member);state.history=[];let result=await env.DB.batch([env.DB.prepare('UPDATE workspace SET data=?,version=version+1 WHERE id=1 AND version=?').bind(JSON.stringify(state),b.version),env.DB.prepare('INSERT INTO audit(actor,operation,details,at) SELECT ?,?,?,? WHERE changes()=1').bind(email,b.op.type,JSON.stringify({id:b.op.id||b.op.kpi?.id||b.op.action?.id,group:b.op.group,month:b.op.month,quarter:b.op.quarter}),new Date().toISOString())]);if(!result[0].meta.changes)fail('Có cập nhật đồng thời. Tải lại và thử lưu lại.',409);return json({version:row.version+1,state});
 }catch(e){return json({error:e.status?e.message:'Không thể xử lý dữ liệu. Vui lòng thử lại.'},e.status||500);}}
+
