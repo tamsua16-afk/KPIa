@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KPI 2027 – Khối IID | Quản lý & Theo dõi đánh giá KPI</title>
+  <meta name="description" content="Ứng dụng quản lý, cascade và theo dõi đánh giá KPI 2027 của Khối IID: KPI Tổng IID → Bộ phận → Cá nhân, theo dõi hàng tháng và review hàng quý." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div class="bg-orbs" aria-hidden="true"><span></span><span></span><span></span></div>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>
+      </div>
+      <div>
+        <div class="brand-title">KPI 2027</div>
+        <div class="brand-sub">Khối IID</div>
+      </div>
+    </div>
+    <nav class="nav" id="nav">
+      <button class="nav-item" data-view="dashboard" id="nav-dashboard"><i>◎</i>Tổng quan</button>
+      <button class="nav-item" data-view="iid" id="nav-iid"><i>①</i>KPI Tổng IID</button>
+      <button class="nav-item" data-view="depts" id="nav-depts"><i>②</i>KPI Bộ phận</button>
+      <button class="nav-item" data-view="emps" id="nav-emps"><i>③</i>KPI Cá nhân</button>
+      <div class="nav-sep">Vận hành</div>
+      <button class="nav-item" data-view="tracking" id="nav-tracking"><i>▤</i>Theo dõi hàng tháng</button>
+      <button class="nav-item" data-view="review" id="nav-review"><i>★</i>Review hàng quý</button>
+      <button class="nav-item" data-view="cascade" id="nav-cascade"><i>⋔</i>Cây liên kết KPI</button>
+      <button class="nav-item" data-view="rules" id="nav-rules"><i>✓</i>Kiểm tra nguyên tắc <b class="nav-badge" id="rules-badge"></b></button>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="motto">“Cùng một logic xuyên suốt — <b>IID → Bộ phận → Cá nhân</b> — để mọi đội ngũ cùng hướng về mục tiêu chung.”</div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="Menu">☰</button>
+      <div class="topbar-title">
+        <h1 id="page-title">Tổng quan</h1>
+        <p id="page-sub">KPI được triển khai xuyên suốt từ cấp Khối → Bộ phận → Cá nhân</p>
+      </div>
+      <div class="topbar-actions">
+        <label class="period">
+          <span>Dữ liệu đến</span>
+          <select id="month-select"></select>
+        </label>
+        <button class="btn ghost" id="btn-export" data-action="export">⇩ Xuất JSON</button>
+        <button class="btn ghost" id="btn-import" data-action="import">⇧ Nhập JSON</button>
+        <button class="btn ghost danger-hover" id="btn-reset" data-action="reset">↺ Dữ liệu mẫu</button>
+        <input type="file" id="import-file" accept="application/json" hidden />
+      </div>
+    </header>
+
+    <main id="view" class="view"></main>
+  </div>
+
+  <div class="modal-backdrop" id="modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <h3 id="modal-title"></h3>
+        <button class="icon-btn" data-action="close-modal" id="modal-close" aria-label="Đóng">✕</button>
+      </div>
+      <form id="modal-form" class="modal-body" novalidate></form>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script src="js/data.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
