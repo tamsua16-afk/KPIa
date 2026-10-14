@@ -17,7 +17,8 @@
 (() => {
   'use strict';
 
-  const STORE = 'kpi2027_iid_v3';
+  const STORE = 'kpi2027_iid_v5';
+  const ADMIN_ORIGIN_KEY = 'kpi2027_admin_origin';
   const REVIEW_STATUS = [
     ['todo', 'Chưa bắt đầu', ''],
     ['self', 'Đã tự đánh giá', 'warn'],
@@ -58,7 +59,14 @@
   }
   function normalize(d) {
     d.reviews = d.reviews || {};
-    d.currentMonth = clamp(+d.currentMonth || 12, 1, 12);
+    d.currentMonth = clamp(+d.currentMonth || 1, 1, 12);
+    if (!Array.isArray(d.selectedMonths) || !d.selectedMonths.length) {
+      d.selectedMonths = [];
+      for (let i = 1; i <= d.currentMonth; i++) d.selectedMonths.push(i);
+    } else {
+      d.selectedMonths = d.selectedMonths.map(Number).filter(m => m >= 1 && m <= 12).sort((a, b) => a - b);
+      if (!d.selectedMonths.length) d.selectedMonths = [d.currentMonth];
+    }
     d.users = d.users || [];
     d.users.forEach(u => { u.password = u.password || 'password123'; });
     d.currentUserId = d.currentUserId || (d.users[0]?.id || 'u_admin');
@@ -67,12 +75,22 @@
     d.emps.forEach(x => { x.iidLinks = x.iidLinks || []; x.deptLinks = x.deptLinks || []; x.kpis = (x.kpis || []).map(normKpi); });
     return d;
   }
+  function isImpersonating() {
+    return false;
+  }
+
   function load() {
     try {
+      ['kpi2027_iid_v4', 'kpi2027_iid_v3', 'kpi2027_iid_v2', 'kpi2027_iid_v1', 'kpi2027_admin_origin', 'kpi2027_admin_impersonating'].forEach(k => {
+        try { localStorage.removeItem(k); } catch (_) {}
+      });
       const raw = localStorage.getItem(STORE);
-      if (raw) { const d = JSON.parse(raw); if (valid(d)) return normalize(d); }
+      if (raw) {
+        const d = JSON.parse(raw);
+        if (valid(d) && d.version >= 5) return normalize(d);
+      }
     } catch (e) { /* ignore */ }
-    return normalize(buildSampleData());
+    return normalize(typeof buildCleanData === 'function' ? buildCleanData() : buildSampleData());
   }
   function save() {
     try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (e) { toast('Không lưu được dữ liệu vào trình duyệt', true); }
@@ -197,6 +215,11 @@
   /* ---------- Lookups ---------- */
   const deptById = id => S.depts.find(d => d.id === id);
   const empById = id => S.emps.find(e => e.id === id);
+  const getCurEmp = () => {
+    const u = curUser();
+    if (u.empId) { const e = empById(u.empId); if (e) return e; }
+    return S.emps.find(e => e.name.toLowerCase() === u.name.toLowerCase()) || null;
+  };
   function findKpi(id) {
     if (!id) return null;
     let k = S.iid.find(x => x.id === id);
@@ -211,37 +234,120 @@
     return empById(eid)?.kpis;
   }
 
+  /* ---------- Period & Months Filtering Engine ---------- */
+  function getSelectedMonths() {
+    if (Array.isArray(S?.selectedMonths) && S.selectedMonths.length) {
+      return S.selectedMonths.slice().map(Number).sort((a, b) => a - b);
+    }
+    const cur = clamp(+S?.currentMonth || 1, 1, 12);
+    const arr = [];
+    for (let i = 1; i <= cur; i++) arr.push(i);
+    return arr;
+  }
+
+  function resolveMonths(...args) {
+    if (!args.length || args[0] === undefined || args[0] === null) {
+      return getSelectedMonths();
+    }
+    if (Array.isArray(args[0])) {
+      return args[0].slice().map(Number).sort((a, b) => a - b);
+    }
+    if (args.length === 2 && isNum(args[0]) && isNum(args[1])) {
+      const from = Math.min(+args[0], +args[1]), to = Math.max(+args[0], +args[1]);
+      const arr = [];
+      for (let i = from; i <= to; i++) arr.push(i);
+      return arr;
+    }
+    if (args.every(isNum)) {
+      return args.map(Number).sort((a, b) => a - b);
+    }
+    return getSelectedMonths();
+  }
+
+  function formatMonthsLabel(months) {
+    const list = resolveMonths(months);
+    if (!list.length) return 'Chưa chọn tháng';
+    if (list.length === 12) return 'Tất cả 12 tháng';
+    if (list.length === 1) return `Tháng ${list[0]}`;
+
+    // Kiểm tra có phải là 1 Quý chuẩn không
+    const isQ = (q, f, t) => list.length === 3 && list[0] === f && list[1] === f + 1 && list[2] === t;
+    if (isQ(1, 1, 3)) return 'Quý 1 (T1–T3)';
+    if (isQ(2, 4, 6)) return 'Quý 2 (T4–T6)';
+    if (isQ(3, 7, 9)) return 'Quý 3 (T7–T9)';
+    if (isQ(4, 10, 12)) return 'Quý 4 (T10–T12)';
+
+    // Kiểm tra có liên tục từ T1 không
+    let isContigFrom1 = true;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] !== i + 1) { isContigFrom1 = false; break; }
+    }
+    if (isContigFrom1) return `T1 – T${list[list.length - 1]} (${list.length} tháng)`;
+
+    // Kiểm tra có liên tục bất kỳ
+    let isContig = true;
+    for (let i = 1; i < list.length; i++) {
+      if (list[i] !== list[i - 1] + 1) { isContig = false; break; }
+    }
+    if (isContig) return `T${list[0]} – T${list[list.length - 1]} (${list.length} tháng)`;
+
+    // Rời rạc
+    if (list.length <= 4) return list.map(m => 'T' + m).join(', ');
+    return `${list.slice(0, 3).map(m => 'T' + m).join(', ')}... (${list.length} tháng)`;
+  }
+
+  function isMonthSelected(m) {
+    return getSelectedMonths().includes(+m);
+  }
+
   /* ---------- Scoring engine ---------- */
-  function actualOf(k, from, to) {
+  function actualOf(k, ...args) {
+    if (!k) return null;
+    const months = resolveMonths(...args);
     const vals = [];
-    for (let m = from; m <= to; m++) { const v = k.monthly[m - 1]; if (isNum(v)) vals.push(+v); }
+    months.forEach(m => {
+      const v = k.monthly?.[m - 1];
+      if (isNum(v)) vals.push(+v);
+    });
     if (!vals.length) return null;
     if (k.aggregation === 'sum') return sum(vals);
     if (k.aggregation === 'avg') return sum(vals) / vals.length;
     return vals[vals.length - 1];
   }
-  function targetOf(k, from, to) { return k.aggregation === 'sum' ? k.target * (to - from + 1) / 12 : +k.target; }
-  function pctOf(k, from, to) {
-    if (!k || from > to) return null;
-    const a = actualOf(k, from, to); if (a === null) return null;
-    const t = targetOf(k, from, to); if (!t) return null;
-    const p = k.direction === 'down' ? (a <= 0 ? RULES.cap : t / a * 100) : a / t * 100;
+
+  function targetOf(k, ...args) {
+    if (!k) return 0;
+    const months = resolveMonths(...args);
+    if (k.aggregation === 'sum') return k.target * (months.length / 12);
+    return +k.target || 0;
+  }
+
+  function pctOf(k, ...args) {
+    if (!k) return null;
+    const a = actualOf(k, ...args);
+    if (a === null) return null;
+    const t = targetOf(k, ...args);
+    if (!t) return null;
+    const p = k.direction === 'down' ? (a <= 0 ? RULES.cap : t / a * 100) : (a / t * 100);
     return clamp(p, 0, RULES.cap);
   }
-  function scoreOf(items, from, to) {
+
+  function scoreOf(items, ...args) {
     let sw = 0, s = 0;
     items.forEach(it => {
       if (!it.kpi) return;
-      const p = pctOf(it.kpi, from, to);
+      const p = pctOf(it.kpi, ...args);
       if (p === null || !(+it.weight > 0)) return;
-      sw += +it.weight; s += p * it.weight;
+      sw += +it.weight;
+      s += p * it.weight;
     });
     return sw ? s / sw : null;
   }
-  const ytd = () => [1, S.currentMonth];
+
+  const ytd = () => getSelectedMonths();
   function qRange(q) {
     const Q = QUARTERS[q - 1];
-    return [Q.from, Math.min(Q.to, S.currentMonth)];
+    return [Q.from, Q.to];
   }
   function rating(score) {
     if (score === null || score === undefined) return { code: 'NA', label: 'Chưa có dữ liệu' };
@@ -262,9 +368,9 @@
       ...e.kpis.map(k => ({ kind: 'own', kpi: k, weight: k.weight }))
     ];
   }
-  const iidScore = (from, to) => scoreOf(iidItems(), from, to);
-  const deptScore = (d, from, to) => scoreOf(deptItems(d), from, to);
-  const empScore = (e, from, to) => scoreOf(empItems(e), from, to);
+  const iidScore = (...args) => scoreOf(iidItems(), ...args);
+  const deptScore = (d, ...args) => scoreOf(deptItems(d), ...args);
+  const empScore = (e, ...args) => scoreOf(empItems(e), ...args);
 
   /* ---------- Rules engine ---------- */
   function checkRules() {
@@ -326,47 +432,58 @@
     b.classList.toggle('ok', !r.errors);
   }
 
-  /* ---------- User Widget, Navigation Scoping & Role Banner ---------- */
+  /* ---------- User Widget & Navigation Scoping ---------- */
   function updateUserWidget() {
     const u = curUser();
     const r = roleOf(u);
-    $('#current-user-name').textContent = u.name;
-    $('#current-user-avatar').textContent = (u.name || '?').slice(0, 2).toUpperCase();
-    $('#current-user-role').innerHTML = `<span class="role-pill ${r.id}">${r.badge}</span>`;
+    const topName = $('#current-user-name');
+    if (topName) topName.textContent = u.name;
+    const topAvatar = $('#current-user-avatar');
+    if (topAvatar) topAvatar.textContent = userInitials(u);
+    const topRole = $('#current-user-role');
+    if (topRole) topRole.innerHTML = `<span class="role-pill ${r.id}">${r.badge}</span>`;
 
-    const banner = $('#role-banner');
-    if (banner) {
-      if (r.id === 'admin') {
-        banner.hidden = true;
-      } else {
-        banner.hidden = false;
-        $('#role-banner-text').innerHTML = `Đang đăng nhập: <b>${esc(u.name)} (${r.badge})</b> – ${esc(u.title || '')}.`;
-      }
-    }
+    const sbName = $('#sidebar-user-name');
+    if (sbName) sbName.textContent = u.name;
+    const sbAvatar = $('#sidebar-user-avatar');
+    if (sbAvatar) sbAvatar.textContent = userInitials(u);
+    const sbRole = $('#sidebar-user-role');
+    if (sbRole) sbRole.innerHTML = `<span class="role-pill ${r.id}">${r.badge}</span>`;
 
-    const navUsers = $('#nav-users');
-    if (navUsers) navUsers.style.display = isAdm() ? '' : 'none';
-
-    const navRules = $('#nav-rules');
-    if (navRules) navRules.style.display = (u.role === 'staff') ? 'none' : '';
+    const show = (sel, on) => { const el = $(sel); if (el) el.style.display = on ? '' : 'none'; };
+    show('#nav-users', isAdm());
+    show('#nav-sep-admin', isAdm());
+    show('#nav-rules', u.role !== 'staff');
+    show('#nav-cascade', u.role !== 'staff');
+    show('#btn-export', isAdm());
+    show('#btn-import', isAdm());
+    show('#btn-reset', isAdm());
 
     const navEmps = $('#nav-emps');
-    if (navEmps) {
-      if (u.role === 'staff') navEmps.innerHTML = `<i>③</i>KPI của tôi`;
-      else if (u.role === 'manager') navEmps.innerHTML = `<i>③</i>KPI phòng ban`;
-      else navEmps.innerHTML = `<i>③</i>KPI Cá nhân`;
-    }
-
+    if (navEmps) navEmps.innerHTML = `<i>③</i>${u.role === 'staff' ? 'KPI của tôi' : 'KPI Cá nhân'}`;
     const navDepts = $('#nav-depts');
-    if (navDepts) {
-      if (u.role === 'staff') navDepts.innerHTML = `<i>②</i>Bộ phận của tôi`;
-      else navDepts.innerHTML = `<i>②</i>KPI Bộ phận`;
-    }
+    if (navDepts) navDepts.innerHTML = `<i>②</i>${u.role === 'staff' ? 'Bộ phận của tôi' : 'KPI Bộ phận'}`;
+  }
 
-    const btnImport = $('#btn-import');
-    if (btnImport) btnImport.style.display = isAdm() ? '' : 'none';
-    const btnReset = $('#btn-reset');
-    if (btnReset) btnReset.style.display = isAdm() ? '' : 'none';
+  function joinUserAsAdmin(uid) {
+    const target = S.users.find(u => u.id === uid);
+    if (!target) return;
+    try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
+    S.currentUserId = uid;
+    UI.selDept = target.deptId || null;
+    UI.selEmp = target.empId || null;
+    save();
+    navigate('dashboard');
+    toast(`Đang xem góc nhìn của: ${target.name} (${roleOf(target).badge})`);
+  }
+
+  function exitImpersonate() {
+    try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
+    S.currentUserId = 'u_admin';
+    UI.selDept = UI.selEmp = null;
+    save();
+    navigate('dashboard');
+    toast('✅ Đã quay lại quyền Admin (Giám đốc Khối)');
   }
 
   /* ---------- UI atoms ---------- */
@@ -439,9 +556,9 @@
       if (v !== null) {
         const h = Math.max(ih * v / max, 1);
         const ok = k.direction === 'down' ? v <= mt : v >= mt;
-        g += `<rect class="bar-actual" x="${x}" y="${P.t + ih - h}" width="${w}" height="${h}" rx="4" fill="${ok ? 'url(#gOk)' : 'url(#gBad)'}" opacity="${i < S.currentMonth ? 1 : .35}"><title>${MONTHS[i]}: ${fmt(v)} ${esc(k.unit)} (mục tiêu tháng ${fmt(mt)})</title></rect>`;
+        g += `<rect class="bar-actual" x="${x}" y="${P.t + ih - h}" width="${w}" height="${h}" rx="4" fill="${ok ? 'url(#gOk)' : 'url(#gBad)'}" opacity="${isMonthSelected(i + 1) ? 1 : .3}"><title>${MONTHS[i]}: ${fmt(v)} ${esc(k.unit)} (mục tiêu tháng ${fmt(mt)})</title></rect>`;
       }
-      g += `<text x="${P.l + bw * i + bw / 2}" y="${H - 8}" text-anchor="middle">${MONTHS[i]}</text>`;
+      g += `<text x="${P.l + bw * i + bw / 2}" y="${H - 8}" text-anchor="middle" style="${isMonthSelected(i + 1) ? 'font-weight:700;fill:var(--primary)' : 'fill:var(--muted)'}">${MONTHS[i]}</text>`;
     });
     const ty = P.t + ih - ih * mt / max;
     g += `<line x1="${P.l}" x2="${W - P.r}" y1="${ty}" y2="${ty}" stroke="var(--orange)" stroke-width="1.5" stroke-dasharray="5 4"/>`;
@@ -454,9 +571,10 @@
   }
 
   /* ---------- KPI items table ---------- */
-  function itemsTable(groups, [from, to], scope, eid) {
+  function itemsTable(groups, period, scope, eid) {
     let rows = '';
     const canEdit = canEditKpi(scope, eid);
+    const months = resolveMonths(period);
     groups.forEach(g => {
       rows += `<tr class="group-row"><td colspan="9">${g.title} · ${fmt(sum(g.items.map(i => i.weight)))}%</td></tr>`;
       if (!g.items.length) rows += `<tr><td colspan="9" class="muted small">Chưa có KPI trong nhóm này</td></tr>`;
@@ -466,7 +584,7 @@
           rows += `<tr><td><span class="tag bad">Lỗi</span></td><td colspan="7" class="muted">Liên kết tới KPI không còn tồn tại</td><td class="num">${canEdit ? it.actions || '' : ''}</td></tr>`;
           return;
         }
-        const p = pctOf(k, from, to), a = actualOf(k, from, to);
+        const p = pctOf(k, months), a = actualOf(k, months);
         rows += `<tr>
           <td class="col-source"><span class="tag ${g.cls}">${g.tag}</span></td>
           <td class="kpi-col-cell">
@@ -534,187 +652,217 @@
     const P = ytd(), m = S.currentMonth, curQ = qOf(m);
     const u = curUser(), r = roleOf(u);
 
-    // 1. GÓC NHÌN NHÂN VIÊN (STAFF)
-    if (u.role === 'staff') {
-      const myEmp = empById(u.empId);
-      if (!myEmp) return `<div class="card empty">Chưa tìm thấy hồ sơ cá nhân liên kết với tài khoản này.</div>`;
-      const sEmp = empScore(myEmp, ...P);
-      const myDept = deptById(myEmp.deptId);
-      const sDept = myDept ? deptScore(myDept, ...P) : null;
-      const myItems = empItems(myEmp);
+    // ==========================================
+    // GÓC NHÌN TỔNG QUAN CHO CÁC VAI TRÒ (NGOẠI TRỪ ADMIN: MANAGER, LEADER, STAFF)
+    // Công thức: KPI = KPI Khối + KPI Bộ phận + KPI Cá nhân (Tổng trọng số chuẩn là 100 điểm)
+    // Tổng quan chỉ hiển thị kết quả 3 trụ cột & thanh tiến độ. Bấm vào từng trụ cột mới mở ra xem chi tiết!
+    // ==========================================
+    if (u.role !== 'admin') {
+      const myEmp = getCurEmp();
+      if (!myEmp) {
+        return `<section class="card empty" style="padding:48px 24px;text-align:center">
+          <div style="font-size:42px;margin-bottom:12px">👤</div>
+          <h3>Chưa tìm thấy hồ sơ nhân sự liên kết</h3>
+          <p class="muted">Tài khoản <b>${esc(u.name)}</b> (${esc(u.email)}) chưa được gắn với mã nhân sự nào trong hệ thống.</p>
+          <div class="row mt" style="justify-content:center">
+            <button class="btn ghost" data-action="change-pwd-modal">🔑 Đổi mật khẩu</button>
+          </div>
+        </section>`;
+      }
+
+      const myDept = deptById(myEmp.deptId) || (u.deptId ? deptById(u.deptId) : null);
+
+      // 1. KPI Khối (IID)
+      const itemsIid = myEmp.iidLinks.map(l => ({ kind: 'iid', kpi: findKpi(l.kpiId)?.kpi, weight: +l.weight || 0, kpiId: l.kpiId }));
+      const wIid = sum(itemsIid.map(x => x.weight));
+      const pctIid = scoreOf(itemsIid, ...P);
+      const ptsIid = (pctIid !== null && wIid > 0) ? Math.round((pctIid * wIid / 100) * 10) / 10 : (wIid === 0 ? 0 : null);
+
+      // 2. KPI Bộ phận
+      const itemsDept = myEmp.deptLinks.map(l => ({ kind: 'dept', kpi: findKpi(l.kpiId)?.kpi, weight: +l.weight || 0, kpiId: l.kpiId }));
+      const wDept = sum(itemsDept.map(x => x.weight));
+      const pctDept = scoreOf(itemsDept, ...P);
+      const ptsDept = (pctDept !== null && wDept > 0) ? Math.round((pctDept * wDept / 100) * 10) / 10 : (wDept === 0 ? 0 : null);
+
+      // 3. KPI Cá nhân
+      const itemsOwn = myEmp.kpis.map(k => ({ kind: 'own', kpi: k, weight: +k.weight || 0 }));
+      const wOwn = sum(itemsOwn.map(x => x.weight));
+      const pctOwn = scoreOf(itemsOwn, ...P);
+      const ptsOwn = (pctOwn !== null && wOwn > 0) ? Math.round((pctOwn * wOwn / 100) * 10) / 10 : (wOwn === 0 ? 0 : null);
+
+      // Tổng điểm (Chuẩn 100 điểm)
+      const totalSetPts = Math.round((wIid + wDept + wOwn) * 10) / 10 || 100;
+      const validEarned = (ptsIid || 0) + (ptsDept || 0) + (ptsOwn || 0);
+      const totalEarnedPts = Math.round(validEarned * 10) / 10;
+      const overallPct = totalSetPts > 0 ? Math.round((totalEarnedPts / totalSetPts * 100) * 10) / 10 : null;
+      const rat = rating(overallPct);
+
+      // Trạng thái review quý
       const myRev = S.reviews[reviewKey('emp', myEmp.id, curQ)] || { status: 'todo' };
       const st = REVIEW_STATUS.find(x => x[0] === myRev.status) || REVIEW_STATUS[0];
 
-      return `
-      <section class="card hero">
-        <div>
-          <div class="row" style="margin-bottom:8px">
-            <span class="role-pill staff">👤 Nhân viên</span>
-            <span class="small muted">Xin chào, <b>${esc(myEmp.name)}</b> – ${esc(myEmp.title || '')} (${esc(myDept?.name || '')})</span>
-          </div>
-          <h2>Bảng theo dõi KPI <span>Cá nhân</span></h2>
-          <p>Chào mừng bạn! Dưới đây là tiến độ thực hiện mục tiêu năm 2027 của riêng bạn. Số liệu bạn cập nhật hàng tháng sẽ tự động đóng góp vào mục tiêu chung của ${esc(myDept?.name || 'phòng ban')}.</p>
-          <div class="row mt" style="flex-wrap:wrap">
-            <button class="btn" data-action="goto" data-view="tracking">▤ Nhập số liệu tháng ${MONTHS[m - 1]}</button>
-            <button class="btn ghost" data-action="review-edit" data-type="emp" data-eid="${myEmp.id}">★ Tự đánh giá Quý ${curQ}</button>
-            <button class="btn ghost" data-action="change-pwd-modal">🔑 Đổi mật khẩu</button>
-          </div>
-        </div>
-        <div class="principles">
-          <div class="principle">
-            <span class="ic" style="background:rgba(47,214,131,.18)">🎯</span>
-            <div><b>Điểm KPI của bạn</b><br><span class="muted">${pctTxt(sEmp)} (${chip(sEmp)})</span></div>
-          </div>
-          <div class="principle">
-            <span class="ic" style="background:rgba(61,139,255,.18)">🏢</span>
-            <div><b>Tiến độ Bộ phận</b><br><span class="muted">${myDept ? myDept.name : '—'}: ${pctTxt(sDept)}</span></div>
-          </div>
-          <div class="principle">
-            <span class="ic" style="background:rgba(255,197,66,.18)">★</span>
-            <div><b>Review Quý ${curQ}</b><br><span class="tag ${st[2]}">${st[1]}</span></div>
-          </div>
-          <div class="principle">
-            <span class="ic" style="background:rgba(56,208,240,.18)">⚡</span>
-            <div><b>Đóng góp Roll-up</b><br><span class="muted">Tự động cộng dồn vào team</span></div>
-          </div>
-        </div>
-      </section>
+      // Role badge info
+      const roleMap = {
+        manager: { label: '💼 Manager (Trưởng bộ phận)', pillClass: 'manager' },
+        leader: { label: '⭐ Leader (Trưởng nhóm)', pillClass: 'leader' },
+        staff: { label: '👤 Nhân viên', pillClass: 'staff' }
+      };
+      const curRoleInfo = roleMap[u.role] || roleMap.staff;
 
-      <section class="grid g-3 mt">
-        <div class="card stat">
-          <span class="glow" style="background:var(--teal)"></span>
-          <div class="label">Điểm KPI Cá nhân YTD</div>
-          <div class="value">${pctTxt(sEmp)}</div>
-          <div class="hint">Đến ${MONTHS[m - 1]} · ${chip(sEmp)}</div>
+      // Danh sách thành viên nếu là Manager hoặc Leader
+      const deptMembers = (u.role === 'manager' || u.role === 'leader') && myDept
+        ? S.emps.filter(e => e.deptId === myDept.id)
+        : [];
+      const empRows = deptMembers.map(e => ({ e, s: empScore(e, ...P) })).sort((a, b) => b.s - a.s);
+
+      return `
+      <section class="card dash-head">
+        <div style="min-width:0">
+          <div class="small muted">
+            <span class="role-pill ${curRoleInfo.pillClass}">${curRoleInfo.label}</span>
+            ${esc(myEmp.title || u.title || '')} · ${esc(myDept?.name || 'Chưa gán bộ phận')}
+          </div>
+          <h2>Xin chào, ${esc(myEmp.name)}</h2>
         </div>
-        <div class="card stat">
-          <span class="glow" style="background:var(--blue)"></span>
-          <div class="label">Số KPI phụ trách</div>
-          <div class="value">${myItems.length}</div>
-          <div class="hint">${myEmp.kpis.length} KPI riêng · ${myEmp.iidLinks.length + myEmp.deptLinks.length} nhận từ cấp trên</div>
-        </div>
-        <div class="card stat">
-          <span class="glow" style="background:var(--sky)"></span>
-          <div class="label">Tiến độ Bộ phận (${esc(myDept?.name || '')})</div>
-          <div class="value">${pctTxt(sDept)}</div>
-          <div class="hint">Mục tiêu chung của team bạn</div>
+        <div class="row" style="flex-wrap:wrap;gap:8px">
+          <button class="btn" data-action="goto" data-view="tracking">▤ Nhập số liệu ${MONTHS[m - 1]}</button>
+          <button class="btn ghost" data-action="review-edit" data-type="emp" data-eid="${myEmp.id}">★ Tự đánh giá Q${curQ} <span class="tag ${st[2]}" style="margin-left:4px">${st[1]}</span></button>
         </div>
       </section>
 
       <section class="card mt">
+        <div class="score-head">
+          <div>
+            <div class="label-caps">Tổng điểm KPI · ${formatMonthsLabel(P)}</div>
+            <div class="score-big">${totalEarnedPts}<span>/ ${totalSetPts} điểm</span></div>
+          </div>
+          <div style="text-align:right">
+            ${chip(overallPct)}
+            <div class="small muted" style="margin-top:6px">= Khối ${wIid}đ + Bộ phận ${wDept}đ + Cá nhân ${wOwn}đ</div>
+          </div>
+        </div>
+
+        <!-- Stacked 100-pt bar -->
+        <div class="stacked-kpi-bar" title="Khối: ${ptsIid || 0}đ | Bộ phận: ${ptsDept || 0}đ | Cá nhân: ${ptsOwn || 0}đ">
+          <div class="stacked-seg iid" style="width:${Math.max(0, Math.min(ptsIid || 0, 100))}%" title="KPI Khối: ${ptsIid || 0}/${wIid} điểm">
+            ${(ptsIid || 0) >= 8 ? `Khối: ${ptsIid}đ` : ''}
+          </div>
+          <div class="stacked-seg dept" style="width:${Math.max(0, Math.min(ptsDept || 0, 100))}%" title="KPI Bộ phận: ${ptsDept || 0}/${wDept} điểm">
+            ${(ptsDept || 0) >= 8 ? `Bộ phận: ${ptsDept}đ` : ''}
+          </div>
+          <div class="stacked-seg own" style="width:${Math.max(0, Math.min(ptsOwn || 0, 100))}%" title="KPI Cá nhân: ${ptsOwn || 0}/${wOwn} điểm">
+            ${(ptsOwn || 0) >= 8 ? `Cá nhân: ${ptsOwn}đ` : ''}
+          </div>
+        </div>
+
+        <div class="stacked-legend">
+          <div class="stacked-legend-item">
+            <span class="stacked-dot" style="background:var(--primary)"></span>
+            <span><b>KPI Khối:</b> ${ptsIid !== null ? ptsIid : '—'} / ${wIid} đ (${pctTxt(pctIid)})</span>
+          </div>
+          <div class="stacked-legend-item">
+            <span class="stacked-dot" style="background:var(--teal)"></span>
+            <span><b>KPI Bộ phận:</b> ${ptsDept !== null ? ptsDept : '—'} / ${wDept} đ (${pctTxt(pctDept)})</span>
+          </div>
+          <div class="stacked-legend-item">
+            <span class="stacked-dot" style="background:var(--sky)"></span>
+            <span><b>KPI Cá nhân:</b> ${ptsOwn !== null ? ptsOwn : '—'} / ${wOwn} đ (${pctTxt(pctOwn)})</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. Ba Thẻ Trụ Cột (Nhấn vào để xem chi tiết từng mục) -->
+      <section class="pillar-grid">
+        <!-- Trụ 1: KPI Khối -->
+        <div class="pillar-card iid">
+          <div class="pillar-head">
+            <div class="pillar-badge-title">
+              <span class="section-num iid" style="margin:0">1</span>
+              <span>KPI Khối IID</span>
+            </div>
+            <span class="pillar-target-weight">Tỷ trọng: ${wIid} điểm</span>
+          </div>
+          <div class="pillar-metric-row">
+            <div>
+              <div class="pillar-big-score">${ptsIid !== null ? ptsIid : '—'} <span style="font-size:14px;color:var(--muted)">/ ${wIid} đ</span></div>
+              <div class="pillar-pct-tag" style="margin-top:2px">Hoàn thành: <b>${pctTxt(pctIid)}</b> ${chip(pctIid)}</div>
+            </div>
+          </div>
+          <div class="pillar-foot">
+            <span class="small muted">${itemsIid.length} chỉ số</span>
+            <button class="btn ghost sm" data-action="goto" data-view="iid">Xem chi tiết →</button>
+          </div>
+        </div>
+
+        <!-- Trụ 2: KPI Bộ Phận -->
+        <div class="pillar-card dept">
+          <div class="pillar-head">
+            <div class="pillar-badge-title">
+              <span class="section-num dept" style="margin:0">2</span>
+              <span>KPI Bộ phận</span>
+            </div>
+            <span class="pillar-target-weight">Tỷ trọng: ${wDept} điểm</span>
+          </div>
+          <div class="pillar-metric-row">
+            <div>
+              <div class="pillar-big-score">${ptsDept !== null ? ptsDept : '—'} <span style="font-size:14px;color:var(--muted)">/ ${wDept} đ</span></div>
+              <div class="pillar-pct-tag" style="margin-top:2px">Hoàn thành: <b>${pctTxt(pctDept)}</b> ${chip(pctDept)}</div>
+            </div>
+          </div>
+          <div class="pillar-foot">
+            <span class="small muted">${itemsDept.length} chỉ số</span>
+            <button class="btn ghost sm" data-action="goto" data-view="depts" ${myDept ? `data-dept="${myDept.id}"` : ''}>Xem chi tiết →</button>
+          </div>
+        </div>
+
+        <!-- Trụ 3: KPI Cá Nhân -->
+        <div class="pillar-card own">
+          <div class="pillar-head">
+            <div class="pillar-badge-title">
+              <span class="section-num emp" style="margin:0">3</span>
+              <span>KPI Cá nhân</span>
+            </div>
+            <span class="pillar-target-weight">Tỷ trọng: ${wOwn} điểm</span>
+          </div>
+          <div class="pillar-metric-row">
+            <div>
+              <div class="pillar-big-score">${ptsOwn !== null ? ptsOwn : '—'} <span style="font-size:14px;color:var(--muted)">/ ${wOwn} đ</span></div>
+              <div class="pillar-pct-tag" style="margin-top:2px">Hoàn thành: <b>${pctTxt(pctOwn)}</b> ${chip(pctOwn)}</div>
+            </div>
+          </div>
+          <div class="pillar-foot">
+            <span class="small muted">${itemsOwn.length} chỉ số</span>
+            <button class="btn ghost sm" data-action="goto" data-view="emps" data-emp="${myEmp.id}">Xem chi tiết →</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. Danh sách thành viên (Nếu là Manager hoặc Leader) -->
+      ${deptMembers.length > 0 ? `
+      <section class="card mt">
         <div class="card-head">
-          <span class="section-num emp">3</span>
-          <h2>Tiến độ chi tiết từng KPI của bạn</h2>
-          <span class="tag">${MONTHS[0]} – ${MONTHS[m - 1]}</span>
+          <div>
+            <div class="row" style="gap:8px">
+              <span class="section-num dept">👥</span>
+              <h2>Nhân sự trong ${esc(myDept?.name || 'Bộ phận')}</h2>
+              <span class="tag">${deptMembers.length} thành viên</span>
+            </div>
+          </div>
+          <button class="btn ghost small" data-action="goto" data-view="review">★ Đánh giá Quý ${curQ} cho team</button>
         </div>
-        <div class="kpi-list">
-          ${myItems.map(it => {
-            const k = it.kpi;
-            if (!k) return '';
-            const p = pctOf(k, ...P);
-            return `<div class="kpi-line">
-              <div class="row">
-                <div style="flex:1;min-width:0">
-                  <div class="kpi-name">${esc(k.name)} <span class="tag ${it.kind}">${it.kind === 'iid' ? 'Từ Khối' : (it.kind === 'dept' ? 'Từ Bộ phận' : 'KPI riêng')}</span></div>
-                  <div class="kpi-meta">Mục tiêu: <b>${fmt(k.target)} ${esc(k.unit)}</b> · Tỷ trọng: <b>${fmt(it.weight)}%</b> · Thực tế YTD: <b>${fmt(actualOf(k, ...P))}</b></div>
-                </div>
-                ${chip(p)}
-              </div>
-              <div class="mt-s">${pctBar(p)}</div>
-            </div>`;
-          }).join('')}
-        </div>
-      </section>`;
-    }
-
-    // 2. GÓC NHÌN MANAGER (TRƯỞNG BỘ PHẬN)
-    if (u.role === 'manager' && u.deptId) {
-      const myDept = deptById(u.deptId);
-      const sDept = myDept ? deptScore(myDept, ...P) : null;
-      const deptMembers = S.emps.filter(e => e.deptId === u.deptId);
-      const empRows = deptMembers.map(e => ({ e, s: empScore(e, ...P) })).sort((a, b) => b.s - a.s);
-
-      return `
-      <section class="card hero">
-        <div>
-          <div class="row" style="margin-bottom:8px">
-            <span class="role-pill manager">💼 Manager</span>
-            <span class="small muted">Xin chào, <b>${esc(u.name)}</b> – Trưởng ${esc(myDept?.name || 'Bộ phận')}</span>
-          </div>
-          <h2>Bảng điều hành <span>${esc(myDept?.name || 'Bộ phận')}</span></h2>
-          <p>Quản lý mục tiêu, tiến độ nhập số liệu và đánh giá KPI của toàn thể thành viên trong ${esc(myDept?.name || 'bộ phận')}.</p>
-          <div class="row mt" style="flex-wrap:wrap">
-            <button class="btn" data-action="goto" data-view="depts" data-dept="${myDept?.id}">② KPI Bộ phận</button>
-            <button class="btn ghost" data-action="goto" data-view="review">★ Đánh giá Quý ${curQ} cho team</button>
-            <button class="btn ghost" data-action="change-pwd-modal">🔑 Đổi mật khẩu</button>
-          </div>
-        </div>
-        <div class="principles">
-          <div class="principle">
-            <span class="ic" style="background:rgba(61,139,255,.18)">📊</span>
-            <div><b>Điểm Bộ phận</b><br><span class="muted">${pctTxt(sDept)} (${chip(sDept)})</span></div>
-          </div>
-          <div class="principle">
-            <span class="ic" style="background:rgba(22,194,163,.18)">👥</span>
-            <div><b>Quy mô nhân sự</b><br><span class="muted">${deptMembers.length} thành viên trực thuộc</span></div>
-          </div>
+        <div class="dept-list mt">
+          ${empRows.map(r => `<div class="row person" data-action="goto" data-view="emps" data-emp="${r.e.id}">
+            ${avatar(empInitials(r.e), empColor(r.e), 34)}
+            <div style="flex:1;min-width:0">
+              <div class="kpi-name">${esc(r.e.name)}</div>
+              <div class="kpi-meta">${esc(r.e.title)}</div>
+            </div>
+            <b class="small">${pctTxt(r.s)}</b>${chip(r.s)}
+          </div>`).join('')}
         </div>
       </section>
-
-      <section class="grid g-3 mt">
-        <div class="card stat">
-          <span class="glow" style="background:var(--blue)"></span>
-          <div class="label">Điểm KPI Bộ phận YTD</div>
-          <div class="value">${pctTxt(sDept)}</div>
-          <div class="hint">Đến ${MONTHS[m - 1]} · ${chip(sDept)}</div>
-        </div>
-        <div class="card stat">
-          <span class="glow" style="background:var(--teal)"></span>
-          <div class="label">KPI riêng của bộ phận</div>
-          <div class="value">${myDept ? myDept.kpis.length : 0}</div>
-          <div class="hint">Tự động Roll-up từ nhân sự</div>
-        </div>
-        <div class="card stat">
-          <span class="glow" style="background:var(--sky)"></span>
-          <div class="label">Nhân sự trong phòng</div>
-          <div class="value">${deptMembers.length}</div>
-          <div class="hint">Đang theo dõi và review</div>
-        </div>
-      </section>
-
-      <section class="grid g-2 mt">
-        <div class="card">
-          <div class="card-head">
-            <span class="section-num dept">2</span>
-            <h2>Tiến độ KPI ${esc(myDept?.name || '')}</h2>
-          </div>
-          <div class="kpi-list">
-            ${myDept ? myDept.kpis.map(k => {
-              const p = pctOf(k, ...P);
-              return `<div class="kpi-line">
-                <div class="row">
-                  <div style="flex:1;min-width:0"><div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div><div class="kpi-meta">Mục tiêu: ${fmt(k.target)} ${esc(k.unit)} · tỷ trọng ${fmt(k.weight)}%</div></div>
-                  ${chip(p)}
-                </div>
-                <div class="mt-s">${pctBar(p)}</div>
-              </div>`;
-            }).join('') : ''}
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-head">
-            <span class="section-num emp">3</span>
-            <h2>Thành viên trong phòng ban</h2>
-          </div>
-          <div class="dept-list">
-            ${empRows.map(r => `<div class="row person" data-action="goto" data-view="emps" data-emp="${r.e.id}">
-              ${avatar(empInitials(r.e), empColor(r.e), 34)}
-              <div style="flex:1;min-width:0"><div class="kpi-name">${esc(r.e.name)}</div><div class="kpi-meta">${esc(r.e.title)}</div></div>
-              <b class="small">${pctTxt(r.s)}</b>${chip(r.s)}
-            </div>`).join('') || '<div class="empty">Chưa có nhân sự</div>'}
-          </div>
-        </div>
-      </section>`;
+      ` : ''}
+      `;
     }
 
     // 3. GÓC NHÌN ADMIN (GIÁM ĐỐC KHỐI)
@@ -748,30 +896,19 @@
       </div>`;
 
     return `
-    <section class="card hero">
-      <div>
-        <div class="row" style="margin-bottom:8px">
-          <span class="role-pill admin">👑 Admin</span>
-          <span class="small muted">Giám đốc Khối IID – Toàn quyền quản trị hệ thống</span>
-        </div>
-        <h2>KPI 2027 – <span>Khối IID</span></h2>
-        <p>Hệ thống tự động đồng bộ hai chiều: Admin thiết lập mục tiêu Khối (Top-down) và hệ thống tự động tổng hợp số liệu thực tế từ từng cá nhân & bộ phận (Bottom-up Rollup).</p>
-        <div class="row mt" style="flex-wrap:wrap">
-          <button class="btn" data-action="goto" data-view="tracking" id="hero-tracking">▤ Cập nhật số liệu ${MONTHS[m - 1]}</button>
-          <button class="btn ghost" data-action="goto" data-view="review" id="hero-review">★ Review Quý ${curQ}</button>
-          <button class="btn ghost" data-action="account-modal">👤 Tài khoản của tôi</button>
-        </div>
+    <section class="card dash-head">
+      <div style="min-width:0">
+        <div class="small muted">Xin chào, <b>${esc(u.name)}</b> · Số liệu: ${formatMonthsLabel(P)}/${S.year || 2027}</div>
+        <h2>Tổng quan Khối IID</h2>
       </div>
-      <div class="principles">
-        <div class="principle"><span class="ic" style="background:rgba(61,139,255,.18)">👑</span><div><b>Phân quyền 4 cấp</b><br><span class="muted">Admin · Manager · Leader · Staff</span></div></div>
-        <div class="principle"><span class="ic" style="background:rgba(22,194,163,.18)">⚡</span><div><b>Tự động Roll-up</b><br><span class="muted">Cá nhân → Bộ phận → Khối</span></div></div>
-        <div class="principle"><span class="ic" style="background:rgba(139,123,255,.18)">⚖</span><div><b>Tỷ trọng = 100%</b><br><span class="muted">ở mọi cấp đánh giá</span></div></div>
-        <div class="principle"><span class="ic" style="background:rgba(255,138,61,.18)">◷</span><div><b>Đánh giá theo quý</b><br><span class="muted">Quy trình 5 bước minh bạch</span></div></div>
+      <div class="row" style="flex-wrap:wrap;gap:8px">
+        <button class="btn" data-action="goto" data-view="tracking" id="hero-tracking">▤ Nhập số liệu ${MONTHS[m - 1]}</button>
+        <button class="btn ghost" data-action="goto" data-view="review" id="hero-review">★ Review Quý ${curQ}</button>
       </div>
     </section>
 
     <section class="grid g-4 mt">
-      <div class="card stat"><span class="glow" style="background:var(--blue)"></span><div class="label">Điểm KPI Tổng IID</div><div class="value">${pctTxt(sIid)}</div><div class="hint">YTD đến ${MONTHS[m - 1]} · ${chip(sIid)}</div></div>
+      <div class="card stat"><span class="glow" style="background:var(--blue)"></span><div class="label">Điểm KPI Tổng IID</div><div class="value">${pctTxt(sIid)}</div><div class="hint">${formatMonthsLabel(P)} · ${chip(sIid)}</div></div>
       <div class="card stat"><span class="glow" style="background:var(--teal)"></span><div class="label">Bộ phận</div><div class="value">${S.depts.length}</div><div class="hint">${deptKpiN} KPI riêng · điểm TB ${pctTxt(dScores.length ? sum(dScores) / dScores.length : null)}</div></div>
       <div class="card stat"><span class="glow" style="background:var(--sky)"></span><div class="label">Nhân sự & Tài khoản</div><div class="value">${S.emps.length}</div><div class="hint">${S.users.length} tài khoản cấp email & MK</div></div>
       <div class="card stat entity" data-action="goto" data-view="rules"><span class="glow" style="background:${rr.errors ? 'var(--red)' : 'var(--green)'}"></span><div class="label">Nguyên tắc</div><div class="value" style="color:${rr.errors ? 'var(--red)' : 'var(--green)'}">${rr.errors ? rr.errors + ' lỗi' : 'Đạt'}</div><div class="hint">${rr.warns} cảnh báo · bấm để xem chi tiết</div></div>
@@ -779,14 +916,13 @@
 
     <section class="grid g-21 mt">
       <div class="card">
-        <div class="card-head"><span class="section-num">1</span><h2>KPI Tổng IID – tiến độ YTD</h2><span class="tag">${MONTHS[0]} – ${MONTHS[m - 1]}</span></div>
+        <div class="card-head"><span class="section-num">1</span><h2>KPI Tổng IID – tiến độ lũy kế</h2><span class="tag">${formatMonthsLabel(P)}</span></div>
         <div class="kpi-list">
           ${S.iid.map(k => {
             const p = pctOf(k, ...P), a = actualOf(k, ...P);
             return `<div class="kpi-line">
             <div class="row"><div style="flex:1;min-width:0">
               <div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div>
-              ${k.desc ? `<div class="kpi-desc small muted" style="margin-top:2px">${esc(k.desc)}</div>` : ''}
               <div class="kpi-meta" style="margin-top:3px">Mục tiêu năm: <b>${fmt(k.target)} ${esc(k.unit)}</b> · Thực tế YTD: <b>${fmt(a)} ${esc(k.unit)}</b> · Tỷ trọng: <b>${fmt(k.weight)}%</b></div>
             </div>${chip(p)}</div>
             <div class="mt-s">${pctBar(p)}</div></div>`;
@@ -795,11 +931,21 @@
       </div>
       <div class="card">
         <div class="card-head"><span class="section-num emp">3</span><h2>Phân bố xếp loại cá nhân</h2></div>
+        ${S.emps.length ? `
         <div class="donut-wrap">
           <div class="donut"><svg viewBox="0 0 150 150"><circle cx="75" cy="75" r="${R0}" stroke="#e2e8f0"/>${circles}</svg>
             <div class="center"><div><b>${S.emps.length}</b><small>nhân sự</small></div></div></div>
           <div class="legend">${legend}</div>
-        </div>
+        </div>` : `
+        <div style="padding:22px 12px;text-align:center">
+          <div style="font-size:32px;margin-bottom:8px">👥</div>
+          <h3 style="font-size:15px;color:var(--navy);font-weight:700">Hệ thống sẵn sàng áp dụng</h3>
+          <p class="muted small" style="margin:6px auto 16px;max-width:320px;line-height:1.5">Chưa có hồ sơ nhân sự nào. Bạn có thể thêm nhân sự hoặc Import file CSV để bắt đầu phân bổ KPI.</p>
+          <div class="row" style="justify-content:center;gap:8px">
+            <button class="btn sm" data-action="import-users-modal">📥 Import nhân sự</button>
+            <button class="btn sm ghost" data-action="goto" data-view="users">👥 Quản lý người dùng</button>
+          </div>
+        </div>`}
       </div>
     </section>
 
@@ -808,16 +954,22 @@
         <div class="card-head"><span class="section-num dept">2</span><h2>Điểm KPI theo bộ phận</h2><span class="tag">YTD</span></div>
         <div class="dept-list">
           ${S.depts.map(d => { const s = deptScore(d, ...P); return `<div class="row person" data-action="goto" data-view="depts" data-dept="${d.id}">
-            ${ring(s)}<div style="flex:1;min-width:0"><div class="kpi-name">${esc(d.name)}</div><div class="kpi-meta">${esc(d.leader)} · ${d.kpis.length} KPI riêng · ${S.emps.filter(e => e.deptId === d.id).length} nhân sự</div>
+            ${ring(s)}<div style="flex:1;min-width:0"><div class="kpi-name">${esc(d.name)}</div><div class="kpi-meta">${esc(d.leader || 'Chưa gán trưởng BP')} · ${d.kpis.length} KPI riêng · ${S.emps.filter(e => e.deptId === d.id).length} nhân sự</div>
             <div class="bar mt-s"><span style="width:${s === null ? 0 : Math.min(s, 100)}%;background:${d.color}"></span></div></div>${chip(s)}</div>`; }).join('') || '<div class="empty">Chưa có bộ phận</div>'}
         </div>
       </div>
       <div class="card">
         <div class="card-head"><span class="section-num emp">3</span><h2>Nhân sự nổi bật & cần hỗ trợ</h2></div>
+        ${S.emps.length ? `
         <div class="small muted" style="margin-bottom:8px">▲ Dẫn đầu</div>
         ${sorted.slice(0, 3).map(personRow).join('') || '<div class="empty">Chưa có dữ liệu</div>'}
         <div class="small muted" style="margin:14px 0 8px">▼ Cần hỗ trợ</div>
         ${sorted.length > 3 ? sorted.slice(-3).reverse().map(personRow).join('') : '<div class="muted small">—</div>'}
+        ` : `
+        <div style="padding:28px 12px;text-align:center" class="muted small">
+          <div style="font-size:26px;margin-bottom:8px">📊</div>
+          <div>Bảng xếp hạng nhân sự dẫn đầu và cần hỗ trợ sẽ tự động hiển thị tại đây khi có dữ liệu đánh giá.</div>
+        </div>`}
       </div>
     </section>`;
   }
@@ -855,7 +1007,7 @@
       <div class="card">
         <div class="card-head"><span class="section-num">1</span><h2>Điểm KPI Tổng IID</h2></div>
         <div class="row" style="gap:18px">${ring(s, true)}
-          <div><div style="font-size:13px" class="muted">YTD ${MONTHS[0]} – ${MONTHS[S.currentMonth - 1]}</div><div class="mt-s">${chip(s)}</div>
+          <div><div style="font-size:13px" class="muted">Lũy kế ${formatMonthsLabel(getSelectedMonths())}</div><div class="mt-s">${chip(s)}</div>
           <div class="small muted mt-s">${S.iid.length} KPI · tổng tỷ trọng <b style="color:${Math.abs(tw - 100) < .01 ? 'var(--green)' : 'var(--red)'}">${fmt(tw)}%</b></div></div>
         </div>
         <div class="mt">${weightStat('Tổng tỷ trọng KPI IID', tw, null)}</div>
@@ -1036,14 +1188,25 @@
       ? [['all', 'Tất cả'], ...S.depts.map(x => [x.id, x.name])].map(([v, l]) => `<button class="${UI.empFilter === v ? 'active' : ''}" data-action="emp-filter" data-val="${v}">${esc(l)}</button>`).join('')
       : '';
 
+    const contentHtml = visibleEmps.length
+      ? `<section class="grid g-4">${visibleEmps.map(x => empCard(x, P)).join('')}</section>${detail}`
+      : `<section class="card empty" style="padding:40px 20px;text-align:center">
+          <div style="font-size:36px;margin-bottom:10px">👥</div>
+          <h3>Chưa có hồ sơ nhân sự nào</h3>
+          <p class="muted small" style="max-width:540px;margin:6px auto 16px">Hệ thống đang ở trạng thái sạch sẵn sàng áp dụng. Bạn có thể thêm từng nhân sự hoặc Import danh sách hàng loạt từ file Excel/CSV.</p>
+          <div class="row" style="justify-content:center;gap:10px">
+            <button class="btn" data-action="add-emp">＋ Thêm nhân sự</button>
+            <button class="btn ghost" data-action="import-users-modal">📥 Import danh sách nhân sự</button>
+          </div>
+        </section>`;
+
     return `
     <div class="row" style="margin-bottom:16px;flex-wrap:wrap">
       ${tabs ? `<div class="tabs">${tabs}</div>` : `<span class="small muted">Danh sách nhân sự thuộc ${esc(deptById(curUser().deptId)?.name || 'đơn vị')}</span>`}
       <span class="spacer"></span>
       ${isAdm() || curUser().role === 'manager' ? '<button class="btn" data-action="add-emp" id="btn-add-emp">＋ Thêm nhân sự</button>' : ''}
     </div>
-    <section class="grid g-4">${visibleEmps.map(x => empCard(x, P)).join('')}</section>
-    ${detail}`;
+    ${contentHtml}`;
   }
 
   /* ---------- Theo dõi hàng tháng ---------- */
@@ -1077,11 +1240,11 @@
   function trackSummary(T) {
     const P = ytd(), s = scoreOf(T.items, ...P);
     let filled = 0, need = 0;
-    T.kpis.forEach(k => { for (let m = 0; m < S.currentMonth; m++) { need++; if (isNum(k.monthly[m])) filled++; } });
+    T.kpis.forEach(k => { P.forEach(m => { need++; if (isNum(k.monthly[m - 1])) filled++; }); });
     const comp = need ? filled / need * 100 : 0;
     return `<div class="row" style="gap:18px">${ring(s, true)}
-      <div style="flex:1"><div class="kpi-name">${esc(T.name)}</div><div class="small muted">Điểm tổng hợp YTD (bao gồm cả các chỉ số liên kết & tự động Roll-up)</div><div class="mt-s">${chip(s)}</div></div>
-      <div style="min-width:220px"><div class="row small"><span class="muted">Số liệu cập nhật đến ${MONTHS[S.currentMonth - 1]}</span><span class="spacer"></span><b>${fmt(comp, 0)}%</b></div>
+      <div style="flex:1"><div class="kpi-name">${esc(T.name)}</div><div class="small muted">Điểm tổng hợp (bao gồm cả các chỉ số liên kết & tự động Roll-up)</div><div class="mt-s">${chip(s)}</div></div>
+      <div style="min-width:220px"><div class="row small"><span class="muted">Dữ liệu: ${formatMonthsLabel(P)}</span><span class="spacer"></span><b>${fmt(comp, 0)}%</b></div>
       <div class="bar lg mt-s"><span style="width:${comp}%"></span></div><div class="small muted mt-s">${filled}/${need} ô dữ liệu đã nhập</div></div>
     </div>`;
   }
@@ -1098,7 +1261,7 @@
       const rows = T.kpis.map(k => {
         const c = trackRowCells(k);
         const cells = k.monthly.map((v, m) =>
-          `<td><input type="text" inputmode="decimal" class="cell-input ${isNum(v) ? 'filled' : ''} ${m >= S.currentMonth ? 'future' : ''}" value="${isNum(v) ? v : ''}" data-scope="${T.scope}" data-eid="${T.eid}" data-kid="${k.id}" data-m="${m}" aria-label="${esc(k.name)} ${MONTHS[m]}"/></td>`
+          `<td><input type="text" inputmode="decimal" class="cell-input ${isNum(v) ? 'filled' : ''} ${isMonthSelected(m + 1) ? '' : 'future'}" value="${isNum(v) ? v : ''}" data-scope="${T.scope}" data-eid="${T.eid}" data-kid="${k.id}" data-m="${m}" aria-label="${esc(k.name)} ${MONTHS[m]}"/></td>`
         ).join('');
         return `<tr data-kid="${k.id}">
           <td class="sticky-col"><div class="kpi-name">${esc(k.name)}</div><div class="kpi-meta">${esc(k.unit)} · ${AGGREGATIONS[k.aggregation]} · ${k.direction === 'down' ? '↓' : '↑'}</div></td>
@@ -1114,7 +1277,7 @@
           <span class="tag">Năm ${S.year || 2027}</span>
         </div>
         <div class="table-wrap"><table class="track-table">
-          <thead><tr><th class="sticky-col">KPI</th><th class="num">MT năm</th>${MONTHS.map((m, i) => `<th class="num ${i + 1 === S.currentMonth ? 'cur-month' : ''}">${m}</th>`).join('')}<th class="num">Thực tế YTD</th><th>% hoàn thành</th></tr></thead>
+          <thead><tr><th class="sticky-col">KPI</th><th class="num">MT năm</th>${MONTHS.map((m, i) => `<th class="num ${isMonthSelected(i + 1) ? 'cur-month' : ''}">${m}</th>`).join('')}<th class="num">Thực tế YTD</th><th>% hoàn thành</th></tr></thead>
           <tbody>${rows || `<tr><td colspan="16" class="empty">Chưa có KPI riêng</td></tr>`}</tbody>
         </table></div>
         <div class="small muted mt-s">💡 Nhập số liệu thực tế tháng vào ô tương ứng, hệ thống sẽ tự động tính lũy kế và đồng bộ lên phòng ban.</div>
@@ -1139,7 +1302,9 @@
     }
 
     const T = trackTarget();
-    let body = '<div class="card mt empty">Không có dữ liệu.</div>';
+    let body = (UI.trackLevel === 'emp' && !S.emps.length)
+      ? '<div class="card mt empty" style="padding:32px 16px;text-align:center"><h3>Chưa có nhân sự nào trong hệ thống</h3><p class="muted small" style="margin-top:6px">Vui lòng thêm nhân sự hoặc Import danh sách từ mục <b>Phân quyền & Người dùng</b> để bắt đầu theo dõi.</p></div>'
+      : '<div class="card mt empty">Không có dữ liệu.</div>';
     if (T) {
       const rows = T.kpis.map(k => {
         const c = trackRowCells(k);
@@ -1149,7 +1314,7 @@
           if (isRollup) {
             return `<td><input type="text" class="cell-input rollup-locked ${isNum(v) ? 'filled' : ''}" value="${isNum(v) ? v : ''}" readonly title="⚡ Số liệu tự động tổng hợp từ cấp dưới" /></td>`;
           }
-          return `<td><input type="text" inputmode="decimal" class="cell-input ${isNum(v) ? 'filled' : ''} ${m >= S.currentMonth ? 'future' : ''}" value="${isNum(v) ? v : ''}" ${canInput ? '' : 'disabled title="Bạn không có quyền nhập ô này"'} data-scope="${T.scope}" data-eid="${T.eid}" data-kid="${k.id}" data-m="${m}" aria-label="${esc(k.name)} ${MONTHS[m]}"/></td>`;
+          return `<td><input type="text" inputmode="decimal" class="cell-input ${isNum(v) ? 'filled' : ''} ${isMonthSelected(m + 1) ? '' : 'future'}" value="${isNum(v) ? v : ''}" ${canInput ? '' : 'disabled title="Bạn không có quyền nhập ô này"'} data-scope="${T.scope}" data-eid="${T.eid}" data-kid="${k.id}" data-m="${m}" aria-label="${esc(k.name)} ${MONTHS[m]}"/></td>`;
         }).join('');
 
         return `<tr data-kid="${k.id}">
@@ -1166,7 +1331,7 @@
           <span class="tag">Năm ${S.year || 2027}</span>
         </div>
         <div class="table-wrap"><table class="track-table">
-          <thead><tr><th class="sticky-col">KPI</th><th class="num">MT năm</th>${MONTHS.map((m, i) => `<th class="num ${i + 1 === S.currentMonth ? 'cur-month' : ''}">${m}</th>`).join('')}<th class="num">Thực tế YTD</th><th>% hoàn thành</th></tr></thead>
+          <thead><tr><th class="sticky-col">KPI</th><th class="num">MT năm</th>${MONTHS.map((m, i) => `<th class="num ${isMonthSelected(i + 1) ? 'cur-month' : ''}">${m}</th>`).join('')}<th class="num">Thực tế YTD</th><th>% hoàn thành</th></tr></thead>
           <tbody>${rows || `<tr><td colspan="16" class="empty">Chưa có KPI riêng ở cấp này</td></tr>`}</tbody>
         </table></div>
       </section>`;
@@ -1402,7 +1567,7 @@
         <td>${d ? `<span class="tag dept">${esc(d.name)}</span>` : '<span class="muted small">Toàn Khối (Khối IID)</span>'}</td>
         <td><span class="tag">••••••••</span></td>
         <td class="num" style="white-space:nowrap">
-          <button class="btn sm ${isCur ? 'ghost' : ''}" data-action="switch-user" data-uid="${u.id}">${isCur ? '✓ Đang dùng' : 'Đăng nhập'}</button>
+          ${!isCur ? `<button class="btn sm" data-action="admin-join-user" data-uid="${u.id}" title="Đăng nhập ngay dưới góc nhìn của tài khoản này">🚀 Join / Xem góc nhìn</button>` : '<span class="tag good" style="font-weight:700">✓ Đang dùng</span>'}
           <button class="btn ghost sm" title="Đặt lại mật khẩu về password123" data-action="admin-reset-pwd" data-uid="${u.id}">Reset MK</button>
           <button class="icon-btn" title="Sửa tài khoản" data-action="edit-user" data-uid="${u.id}">✎</button>
           ${(!isCur && u.id !== 'u_admin') ? `<button class="icon-btn del" title="Xóa tài khoản" data-action="del-user" data-uid="${u.id}">🗑</button>` : ''}
@@ -1453,6 +1618,7 @@
   function render(animate = false) {
     computeRollups();
     updateUserWidget();
+    updateMonthFilterWidget();
     if (!RENDER[UI.view]) UI.view = 'dashboard';
     $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === UI.view));
     const [t, s] = VIEWS[UI.view];
@@ -1526,9 +1692,9 @@
         </div>
       </div>
       <div class="field full">
-        <div class="profile-actions-grid">
+        <div class="profile-actions-grid" style="${isAdm() ? '' : 'grid-template-columns:1fr'}">
           <button type="button" class="btn" data-action="change-pwd-modal">🔑 Đổi mật khẩu của tôi</button>
-          <button type="button" class="btn ghost" data-action="switch-user-modal">👥 Đổi tài khoản (Demo)</button>
+          ${isAdm() ? '<button type="button" class="btn ghost" data-action="switch-user-modal">👥 Chuyển góc nhìn (Admin)</button>' : ''}
           <button type="button" class="btn ghost danger-hover" data-action="do-logout" style="grid-column: 1 / -1">🚪 Đăng xuất khỏi hệ thống</button>
         </div>
       </div>
@@ -1573,26 +1739,30 @@
     const overlay = $('#login-overlay');
     if (!overlay) return;
     overlay.hidden = false;
+    overlay.removeAttribute('hidden');
+    overlay.style.display = 'flex';
 
-    // Render danh sách tài khoản demo tiện lợi
+    // Render danh sách tài khoản tiện ích
     const demoGrid = $('#demo-accounts-grid');
     if (demoGrid) {
-      demoGrid.innerHTML = [
-        { label: 'Admin (Giám đốc Khối)', email: 'director.iid@gmo.vn', badge: '👑 Admin' },
-        { label: 'Manager (Kinh doanh)', email: 'tuan.nm@gmo.vn', badge: '💼 Manager' },
-        { label: 'Leader (Marketing)', email: 'linh.hm@gmo.vn', badge: '🎖️ Leader' },
-        { label: 'Staff (Account Exec)', email: 'lan.dt@gmo.vn', badge: '👤 Staff' }
-      ].map(a => `<button type="button" class="demo-acc-btn" data-action="quick-login" data-email="${a.email}">
-        <span class="role-pill" style="font-size:10px;padding:1px 6px">${a.badge}</span>
-        <div><b>${a.email}</b><span>Mật khẩu: password123</span></div>
-      </button>`).join('');
+      demoGrid.innerHTML = S.users.slice(0, 4).map(u => {
+        const r = roleOf(u);
+        return `<button type="button" class="demo-acc-btn" data-action="quick-login" data-email="${esc(u.email)}">
+          <span class="role-pill ${r.id}" style="font-size:10px;padding:1px 6px">${r.badge}</span>
+          <div><b>${esc(u.name)}</b><span>${esc(u.email)} (MK: password123)</span></div>
+        </button>`;
+      }).join('');
     }
 
     $('#login-email')?.focus();
   }
   function hideLoginOverlay() {
     const overlay = $('#login-overlay');
-    if (overlay) overlay.hidden = true;
+    if (overlay) {
+      overlay.hidden = true;
+      overlay.setAttribute('hidden', '');
+      overlay.style.display = 'none';
+    }
   }
 
   function handleLogin(email, password) {
@@ -1607,6 +1777,7 @@
       return false;
     }
 
+    try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
     S.currentUserId = u.id;
     save();
     hideLoginOverlay();
@@ -1615,8 +1786,11 @@
     return true;
   }
 
-  /* ---------- Switch User Modal (Demo Selector) ---------- */
+  /* ---------- Switch User Modal (Chỉ dành cho Admin) ---------- */
   function switchUserModal() {
+    if (!isAdm()) {
+      return accountModal();
+    }
     const items = S.users.map(u => {
       const r = roleOf(u);
       const d = deptById(u.deptId);
@@ -2175,12 +2349,27 @@
     rd.readAsText(file);
   }
   function resetData() {
-    if (!confirm('Khôi phục dữ liệu mẫu? Toàn bộ dữ liệu hiện tại sẽ bị thay thế.\n(Hãy "Xuất JSON" trước nếu cần sao lưu.)')) return;
-    S = normalize(buildSampleData());
-    UI.selDept = UI.selEmp = null;
-    computeRollups();
-    save(); fillMonthSelect(); render(true);
-    toast('Đã khôi phục dữ liệu mẫu');
+    openModal('⚙ Quản lý & Làm sạch dữ liệu', `
+      <div class="field full">
+        <p class="muted small" style="margin-bottom:14px">Bạn có thể chọn làm sạch toàn bộ dữ liệu mẫu để áp dụng cho đội nhóm thật, hoặc nạp lại dữ liệu demo mẫu để trải nghiệm thử.</p>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div style="border:1px solid var(--line);border-radius:12px;padding:16px;background:#f8fafc;display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <div>
+              <b style="color:var(--navy);font-size:14px">🧹 Làm sạch dữ liệu để ÁP DỤNG THỰC TẾ</b>
+              <div class="muted small" style="margin-top:4px">Xóa toàn bộ nhân sự mẫu, xóa toàn bộ tài khoản mẫu (chỉ giữ lại tài khoản Admin <code>director.iid@gmo.vn</code>), làm trống số liệu thực tế theo tháng và đánh giá quý.</div>
+            </div>
+            <button type="button" class="btn sm" data-action="do-clean-reset">Làm sạch ngay</button>
+          </div>
+          <div style="border:1px solid var(--line);border-radius:12px;padding:16px;background:#fff;display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <div>
+              <b style="color:var(--text);font-size:14px">📦 Nạp lại dữ liệu demo mẫu</b>
+              <div class="muted small" style="margin-top:4px">Nạp lại 10 tài khoản demo mẫu (Leader, Manager, Staff) và số liệu giả lập để trải nghiệm thử.</div>
+            </div>
+            <button type="button" class="btn ghost sm" data-action="do-sample-reset">Nạp dữ liệu mẫu</button>
+          </div>
+        </div>
+      </div>
+    `, null, null, { viewOnly: true });
   }
 
   /* ---------- Toast ---------- */
@@ -2193,25 +2382,170 @@
     setTimeout(() => t.remove(), 3200);
   }
 
+  /* ---------- Month Filter Dropdown Widget ---------- */
+  function updateMonthFilterWidget() {
+    const months = getSelectedMonths();
+    const label = formatMonthsLabel(months);
+    const disp = $('#month-filter-display');
+    if (disp) disp.textContent = label;
+
+    const countEl = $('#month-menu-count');
+    if (countEl) countEl.textContent = `Đã chọn ${months.length}/12 tháng`;
+
+    const tagEl = $('#month-summary-tag');
+    if (tagEl) {
+      if (months.length === 12) tagEl.textContent = '💡 Đang tính lũy kế cả năm (12 tháng)';
+      else tagEl.textContent = `💡 Đang tính ${months.length} tháng (${label})`;
+    }
+
+    const grid = $('#month-checkbox-grid');
+    if (grid) {
+      grid.innerHTML = MONTHS.map((name, i) => {
+        const m = i + 1;
+        const checked = months.includes(m);
+        return `<label class="month-check-card ${checked ? 'active' : ''}" for="m-cb-${m}">
+          <input type="checkbox" class="month-cb" id="m-cb-${m}" data-month="${m}" ${checked ? 'checked' : ''} />
+          <span class="month-name">T${m}</span>
+        </label>`;
+      }).join('');
+    }
+
+    // Cập nhật trạng thái active của các nút chọn nhanh
+    $$('.month-quick-btns button, .month-quarters-row button').forEach(btn => {
+      const mode = btn.dataset.mode;
+      let isActive = false;
+      if (mode === 'all') isActive = months.length === 12;
+      else if (mode === 'q1') isActive = months.length === 3 && months.join(',') === '1,2,3';
+      else if (mode === 'q2') isActive = months.length === 3 && months.join(',') === '4,5,6';
+      else if (mode === 'q3') isActive = months.length === 3 && months.join(',') === '7,8,9';
+      else if (mode === 'q4') isActive = months.length === 3 && months.join(',') === '10,11,12';
+      btn.classList.toggle('active', isActive);
+    });
+  }
+
+  function toggleMonthMenu(force) {
+    const pop = $('#month-menu-popover');
+    const btn = $('#btn-month-filter');
+    if (!pop || !btn) return;
+    const isHidden = force !== undefined ? !force : !pop.hidden;
+    pop.hidden = isHidden;
+    btn.setAttribute('aria-expanded', String(!isHidden));
+  }
+
+  function handleMonthToggle(monthNum) {
+    const m = +monthNum;
+    if (!m || m < 1 || m > 12) return;
+    let months = getSelectedMonths().slice();
+    if (months.includes(m)) {
+      if (months.length <= 1) {
+        toast('Vui lòng chọn ít nhất 1 tháng để tính KPI', true);
+        updateMonthFilterWidget();
+        return;
+      }
+      months = months.filter(x => x !== m);
+    } else {
+      months.push(m);
+      months.sort((a, b) => a - b);
+    }
+    S.selectedMonths = months;
+    S.currentMonth = Math.max(...months);
+    save();
+    computeRollups();
+    render();
+    toast(`Dữ liệu tính theo: ${formatMonthsLabel(months)}`);
+  }
+
+  function handleMonthQuick(mode) {
+    let list = [];
+    switch (mode) {
+      case 'all':
+        list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        break;
+      case 'ytd': {
+        const curCal = new Date().getMonth() + 1;
+        const targetM = Math.max(1, Math.min(12, curCal));
+        list = [];
+        for (let i = 1; i <= targetM; i++) list.push(i);
+        break;
+      }
+      case 'clear':
+        list = [S.currentMonth || 1];
+        break;
+      case 'q1': list = [1, 2, 3]; break;
+      case 'q2': list = [4, 5, 6]; break;
+      case 'q3': list = [7, 8, 9]; break;
+      case 'q4': list = [10, 11, 12]; break;
+      default: return;
+    }
+    if (!list.length) list = [1];
+    S.selectedMonths = list;
+    S.currentMonth = Math.max(...list);
+    save();
+    computeRollups();
+    render();
+    toast(`Đã chọn: ${formatMonthsLabel(list)}`);
+  }
+
   function fillMonthSelect() {
-    $('#month-select').innerHTML = MONTHS.map((m, i) => `<option value="${i + 1}" ${i + 1 === S.currentMonth ? 'selected' : ''}>Tháng ${i + 1}/${S.year || 2027}</option>`).join('');
+    const sel = $('#month-select');
+    if (sel) {
+      sel.innerHTML = MONTHS.map((m, i) => `<option value="${i + 1}" ${i + 1 === S.currentMonth ? 'selected' : ''}>Tháng ${i + 1}/${S.year || 2027}</option>`).join('');
+    }
+    updateMonthFilterWidget();
   }
 
   /* =========================================================
      EVENTS
      ========================================================= */
   document.addEventListener('click', ev => {
+    // Đóng popover chọn tháng khi click ra ngoài
+    const pop = $('#month-menu-popover');
+    if (pop && !pop.hidden && !ev.target.closest('#month-filter-dropdown')) {
+      toggleMonthMenu(false);
+    }
+
     const el = ev.target.closest('[data-action], .nav-item');
     if (!el) {
       if (ev.target.id === 'modal') closeModal();
+      if (ev.target.id === 'login-overlay') hideLoginOverlay();
       return;
     }
     if (el.classList.contains('nav-item')) { navigate(el.dataset.view); return; }
     const a = el.dataset.action, ds = el.dataset;
     switch (a) {
+      case 'open-login':
+        closeModal();
+        showLoginOverlay();
+        break;
+      case 'close-login':
+        hideLoginOverlay();
+        break;
+      case 'toggle-month-menu': toggleMonthMenu(); break;
+      case 'close-month-menu': toggleMonthMenu(false); break;
+      case 'month-quick': handleMonthQuick(ds.mode); break;
       case 'export': exportJSON(); break;
       case 'import': $('#import-file').click(); break;
       case 'reset': resetData(); break;
+      case 'do-clean-reset': {
+        closeModal();
+        if (!confirm('Xác nhận làm sạch toàn bộ dữ liệu mẫu?\n- Xóa toàn bộ nhân sự mẫu\n- Chỉ giữ lại duy nhất tài khoản Admin (director.iid@gmo.vn)\n- Làm trống số liệu thực tế theo tháng\n(Hãy "Xuất JSON" nếu bạn cần sao lưu trước khi xóa).')) break;
+        S = normalize(typeof buildCleanData === 'function' ? buildCleanData() : buildSampleData());
+        UI.selDept = UI.selEmp = null;
+        computeRollups();
+        save(); fillMonthSelect(); render(true);
+        toast('Đã làm sạch dữ liệu – Hệ thống sẵn sàng áp dụng cho đội nhóm!');
+        break;
+      }
+      case 'do-sample-reset': {
+        closeModal();
+        if (!confirm('Khôi phục dữ liệu demo mẫu? Toàn bộ dữ liệu hiện tại sẽ bị thay thế.')) break;
+        S = normalize(buildSampleData());
+        UI.selDept = UI.selEmp = null;
+        computeRollups();
+        save(); fillMonthSelect(); render(true);
+        toast('Đã nạp lại dữ liệu demo mẫu');
+        break;
+      }
       case 'close-modal': closeModal(); break;
 
       // Tài khoản & Mật khẩu
@@ -2224,17 +2558,33 @@
         toast('Đã đăng xuất khỏi tài khoản.');
         break;
       case 'switch-to-admin':
-        S.currentUserId = 'u_admin';
-        UI.selDept = UI.selEmp = null;
-        save(); render(true); toast('Đã chuyển sang vai trò: Admin (Giám đốc Khối)');
+        if (!isAdm()) {
+          toast('Bạn không có quyền chuyển sang Admin!', true);
+          break;
+        }
+        exitImpersonate();
+        break;
+      case 'admin-join-user':
+        closeModal();
+        if (!isAdm()) {
+          toast('Chỉ tài khoản Admin mới có quyền truy cập góc nhìn tài khoản khác!', true);
+          break;
+        }
+        joinUserAsAdmin(ds.uid);
         break;
       case 'switch-user': {
+        closeModal();
+        if (!isAdm()) {
+          toast('Chỉ tài khoản Admin mới có quyền chuyển đổi góc nhìn!', true);
+          break;
+        }
+        try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
         const u = S.users.find(x => x.id === ds.uid);
         if (u) {
           S.currentUserId = u.id;
           UI.selDept = u.deptId || null;
           UI.selEmp = u.empId || null;
-          save(); closeModal(); render(true);
+          save(); render(true);
           toast(`Đã chuyển sang: ${u.name} (${roleOf(u).badge})`);
         }
         break;
@@ -2324,13 +2674,24 @@
 
   document.addEventListener('change', ev => {
     const t = ev.target;
-    if (t.id === 'month-select') { S.currentMonth = +t.value; save(); render(); toast(`Dữ liệu tính đến Tháng ${t.value}`); }
+    if (t.classList.contains('month-cb')) {
+      handleMonthToggle(t.dataset.month);
+    }
+    else if (t.id === 'month-select') {
+      S.currentMonth = +t.value;
+      S.selectedMonths = [];
+      for (let i = 1; i <= S.currentMonth; i++) S.selectedMonths.push(i);
+      save(); render(); toast(`Dữ liệu tính đến Tháng ${t.value}`);
+    }
     else if (t.id === 'track-entity') { if (UI.trackLevel === 'dept') UI.trackDept = t.value; else UI.trackEmp = t.value; render(); }
     else if (t.id === 'import-file') { if (t.files[0]) importJSON(t.files[0]); t.value = ''; }
     else if (t.classList.contains('cell-input')) onCellChange(t);
   });
   document.addEventListener('keydown', ev => {
-    if (ev.key === 'Escape' && !$('#modal').hidden) closeModal();
+    if (ev.key === 'Escape') {
+      if (!$('#modal').hidden) closeModal();
+      if (!$('#login-overlay')?.hidden) hideLoginOverlay();
+    }
     if (ev.key === 'Enter' && ev.target.classList?.contains('cell-input')) { ev.preventDefault(); ev.target.blur(); }
   });
 

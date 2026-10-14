@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=202702" />
+  <link rel="stylesheet" href="css/styles.css?v=202709" />
 </head>
 <body>
   <div class="light-ambient" aria-hidden="true"></div>
@@ -36,7 +36,24 @@
       <button class="nav-item" data-view="rules" id="nav-rules"><i>✓</i>Kiểm tra nguyên tắc <b class="nav-badge" id="rules-badge"></b></button>
       <button class="nav-item" data-view="users" id="nav-users"><i>👥</i>Phân quyền & Người dùng</button>
     </nav>
-    <div class="sidebar-foot">
+    <div class="sidebar-foot" id="sidebar-foot">
+      <div class="sidebar-auth-card" id="sidebar-auth-card">
+        <div class="sidebar-user-row" data-action="account-modal" title="Bấm để xem hồ sơ tài khoản">
+          <div class="user-avatar sidebar-avatar" id="sidebar-user-avatar">AD</div>
+          <div class="sidebar-user-details">
+            <span class="sidebar-user-name" id="sidebar-user-name">Giám đốc Khối</span>
+            <div class="sidebar-user-role-wrap" id="sidebar-user-role"><span class="role-pill admin">👑 Admin</span></div>
+          </div>
+        </div>
+        <div class="sidebar-auth-actions">
+          <button type="button" class="sidebar-auth-btn btn-login" data-action="open-login" title="Đăng nhập tài khoản khác bằng Email/Mật khẩu">
+            <i>🔑</i><span>Đăng nhập</span>
+          </button>
+          <button type="button" class="sidebar-auth-btn btn-logout" data-action="do-logout" title="Đăng xuất khỏi hệ thống">
+            <i>🚪</i><span>Đăng xuất</span>
+          </button>
+        </div>
+      </div>
       <div class="motto">
         <div class="motto-tag">🎯 NGUYÊN TẮC LIÊN KẾT</div>
         “Cùng một logic xuyên suốt — <b>IID → Bộ phận → Cá nhân</b> — để toàn đội ngũ Tenten cùng hướng về một kết quả chung.”
@@ -53,17 +70,45 @@
         <p id="page-sub">KPI được triển khai xuyên suốt từ cấp Khối → Bộ phận → Cá nhân</p>
       </div>
       <div class="topbar-actions">
-        <label class="period">
-          <span>Dữ liệu đến</span>
-          <select id="month-select"></select>
-        </label>
+        <div class="month-filter-dropdown" id="month-filter-dropdown">
+          <button type="button" class="month-filter-btn" id="btn-month-filter" data-action="toggle-month-menu" aria-haspopup="true" aria-expanded="false" title="Bấm để chọn 1 hoặc nhiều tháng">
+            <span class="month-filter-ic">📅</span>
+            <span class="month-filter-label">Dữ liệu:</span>
+            <b class="month-filter-val" id="month-filter-display">T1 – T9 (9 tháng)</b>
+            <span class="month-filter-caret">▾</span>
+          </button>
+          <div class="month-menu-popover" id="month-menu-popover" hidden>
+            <div class="month-menu-head">
+              <div class="month-menu-title">
+                <b>Chọn tháng tính dữ liệu</b>
+                <span class="small muted" id="month-menu-count">Đã chọn 9/12 tháng</span>
+              </div>
+              <div class="month-quick-btns">
+                <button type="button" class="btn-xs ghost" data-action="month-quick" data-mode="all">Tất cả</button>
+                <button type="button" class="btn-xs ghost" data-action="month-quick" data-mode="ytd">YTD</button>
+                <button type="button" class="btn-xs ghost" data-action="month-quick" data-mode="clear">Xóa</button>
+              </div>
+            </div>
+            <div class="month-quarters-row">
+              <button type="button" class="btn-xs q-btn" data-action="month-quick" data-mode="q1">Quý 1</button>
+              <button type="button" class="btn-xs q-btn" data-action="month-quick" data-mode="q2">Quý 2</button>
+              <button type="button" class="btn-xs q-btn" data-action="month-quick" data-mode="q3">Quý 3</button>
+              <button type="button" class="btn-xs q-btn" data-action="month-quick" data-mode="q4">Quý 4</button>
+            </div>
+            <div class="month-checkbox-grid" id="month-checkbox-grid"></div>
+            <div class="month-menu-foot">
+              <span class="small muted" id="month-summary-tag">💡 Tick chọn 1 hoặc nhiều tháng</span>
+              <button type="button" class="btn sm" data-action="close-month-menu">Xong</button>
+            </div>
+          </div>
+        </div>
         <button class="btn ghost" id="btn-export" data-action="export">⇩ Xuất JSON</button>
         <button class="btn ghost" id="btn-import" data-action="import">⇧ Nhập JSON</button>
-        <button class="btn ghost danger-hover" id="btn-reset" data-action="reset">↺ Dữ liệu mẫu</button>
+        <button class="btn ghost danger-hover" id="btn-reset" data-action="reset" title="Quản lý / Làm sạch dữ liệu">⚙ Quản lý dữ liệu</button>
         <input type="file" id="import-file" accept="application/json" hidden />
 
-        <!-- User Role Switcher -->
-        <button class="user-badge" id="user-badge" data-action="switch-user-modal" title="Bấm để chuyển đổi vai trò và tài khoản">
+        <!-- User Role / Account Profile -->
+        <button class="user-badge" id="user-badge" data-action="account-modal" title="Hồ sơ tài khoản cá nhân">
           <div class="user-avatar" id="current-user-avatar">AD</div>
           <div class="user-meta">
             <div class="user-name" id="current-user-name">Giám đốc Khối</div>
@@ -73,13 +118,6 @@
         </button>
       </div>
     </header>
-
-    <div class="role-banner" id="role-banner" hidden>
-      <span class="role-banner-ic">ℹ️</span>
-      <span id="role-banner-text">Đang xem với vai trò ...</span>
-      <button class="btn sm ghost" data-action="switch-user-modal">Đổi vai trò</button>
-      <button class="btn sm" id="btn-quick-admin" data-action="switch-to-admin">Về quyền Admin</button>
-    </div>
 
     <main id="view" class="view"></main>
   </div>
@@ -99,6 +137,7 @@
   <!-- Màn hình Đăng nhập bằng Email & Mật khẩu -->
   <div class="login-backdrop" id="login-overlay" hidden>
     <div class="login-card">
+      <button type="button" class="login-close-btn" data-action="close-login" title="Đóng màn hình đăng nhập">✕</button>
       <div class="login-brand">
         <div class="login-logo-container">
           <img src="assets/tenten-logo.png" alt="Tenten.vn by GMO" class="login-logo-img" />
@@ -123,13 +162,13 @@
       </form>
 
       <div class="demo-accounts">
-        <div class="small muted" style="margin-bottom:8px;font-weight:600">⚡ Chọn nhanh tài khoản demo (Mật khẩu: password123):</div>
+        <div class="small muted" style="margin-bottom:8px;font-weight:600">⚡ Tài khoản truy cập nhanh (Mật khẩu mặc định: password123):</div>
         <div class="demo-btn-grid" id="demo-accounts-grid"></div>
       </div>
     </div>
   </div>
 
-  <script src="js/data.js?v=202702"></script>
-  <script src="js/app.js?v=202702"></script>
+  <script src="js/data.js?v=202709"></script>
+  <script src="js/app.js?v=202709"></script>
 </body>
 </html>

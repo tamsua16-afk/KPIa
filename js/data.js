@@ -94,6 +94,181 @@ function kpi(o) {
   }, o);
 }
 
+/* ---------- Khởi tạo Dữ liệu sạch Sẵn sàng Áp dụng Thực tế (Chỉ giữ Admin) ---------- */
+function buildCleanData() {
+  // 1. KPI Cấp Khối IID (Khung chuẩn Tenten.vn, số liệu thực tế trống)
+  const iid = [
+    kpi({
+      id: 'iid_rev', name: 'Doanh thu Toàn Khối (Revenue)',
+      desc: 'Tổng doanh thu từ Tên miền, Hosting, Email Server, Cloud VPS, SSL và Hóa đơn điện tử Tenten',
+      unit: 'tỷ', target: 1200, aggregation: 'sum', rollupMode: 'rollup_sum',
+      owner: 'Giám đốc Khối IID', source: 'Hệ thống ERP / Tổng hợp Sales'
+    }),
+    kpi({
+      id: 'iid_gp', name: 'Lợi nhuận gộp (Gross Profit - GP)',
+      desc: 'Doanh thu trừ giá vốn nhà đăng ký tên miền & hạ tầng trung tâm dữ liệu',
+      unit: 'tỷ', target: 360, aggregation: 'sum', rollupMode: 'manual',
+      owner: 'Giám đốc Khối IID', source: 'Báo cáo Tài chính P&L'
+    }),
+    kpi({
+      id: 'iid_gm', name: 'Tỷ suất lợi nhuận gộp (Gross Margin - GM%)',
+      desc: 'Tỷ lệ GP / Doanh thu, phản ánh biên lợi nhuận cốt lõi của các dòng sản phẩm hosting & cloud',
+      unit: '%', target: 30, aggregation: 'avg', rollupMode: 'manual',
+      owner: 'Giám đốc Tài chính Khối', source: 'Báo cáo Tài chính P&L'
+    }),
+    kpi({
+      id: 'iid_nrr', name: 'Tỷ lệ duy trì doanh thu (NRR)',
+      desc: 'Net Revenue Retention: Tỷ lệ giữ chân và mở rộng giá trị hợp đồng từ khách hàng hiện hữu (Mục tiêu > 100%)',
+      unit: '%', target: 110, aggregation: 'avg', rollupMode: 'manual',
+      owner: 'Giám đốc Khối IID', source: 'CRM & Hệ thống Billing Tenten'
+    }),
+    kpi({
+      id: 'iid_churn', name: 'Tỷ lệ khách hàng rời bỏ (Churn Rate)',
+      desc: 'Tỷ lệ khách hàng không gia hạn tên miền/hosting sau khi hết hạn chu kỳ (Càng thấp càng tốt)',
+      unit: '%', target: 4.5, aggregation: 'avg', direction: 'down', rollupMode: 'manual',
+      owner: 'Trưởng CS Khối', source: 'CRM Tenten'
+    })
+  ];
+  [30, 25, 15, 15, 15].forEach((w, i) => { iid[i].weight = w; });
+  iid.forEach(k => { k.monthly = Array(12).fill(null); });
+
+  // 2. 4 Bộ phận Khối IID (Sẵn sàng để gán nhân sự & quản trị)
+  const depts = [
+    {
+      id: 'd_sales', name: 'Kinh doanh (Sales)', leader: '', managerId: null, color: DEPT_COLORS[0],
+      iidLinks: [{ kpiId: 'iid_rev', weight: 30 }, { kpiId: 'iid_gp', weight: 20 }],
+      kpis: [
+        kpi({
+          id: 'dk_sales_rev', name: 'Doanh số ký mới (New Sales)',
+          desc: 'Doanh thu ký hợp đồng mới tên miền, web hosting, email server và cloud VPS trong năm',
+          unit: 'tỷ', target: 480, weight: 20, linkTo: 'iid_rev', rollupMode: 'rollup_sum',
+          owner: 'Trưởng phòng KD', source: 'Tổng hợp từ cá nhân Sales'
+        }),
+        kpi({
+          id: 'dk_sales_deal', name: 'Số lượng khách hàng mới',
+          desc: 'Số lượng doanh nghiệp & cá nhân đăng ký mới tài khoản dịch vụ trên Tenten.vn',
+          unit: 'KH', target: 240, weight: 15, linkTo: 'iid_rev', rollupMode: 'rollup_sum',
+          owner: 'Trưởng phòng KD', source: 'CRM Pipeline Tenten'
+        }),
+        kpi({
+          id: 'dk_sales_cr', name: 'Tỷ lệ chốt hợp đồng (Win Rate)',
+          desc: 'Tỷ lệ cơ hội kinh doanh chuyển đổi thành hợp đồng thành công',
+          unit: '%', target: 25, aggregation: 'avg', weight: 15, linkTo: 'iid_rev', rollupMode: 'manual',
+          owner: 'Sales Operations', source: 'CRM Pipeline'
+        })
+      ]
+    },
+    {
+      id: 'd_cs', name: 'Customer Success & Hỗ trợ', leader: '', managerId: null, color: DEPT_COLORS[1],
+      iidLinks: [{ kpiId: 'iid_nrr', weight: 25 }, { kpiId: 'iid_churn', weight: 20 }],
+      kpis: [
+        kpi({
+          id: 'dk_cs_upsell', name: 'Doanh thu Nâng cấp (Upsell & Cross-sell)',
+          desc: 'Doanh số từ việc khách hàng nâng cấp gói hosting, chuyển lên Cloud VPS hoặc mua thêm SSL/Email',
+          unit: 'tỷ', target: 150, weight: 20, linkTo: 'iid_nrr', rollupMode: 'rollup_sum',
+          owner: 'Trưởng CS', source: 'Billing CS Tenten'
+        }),
+        kpi({
+          id: 'dk_cs_ret', name: 'Tỷ lệ gia hạn dịch vụ (Renewal Rate)',
+          desc: 'Tỷ lệ khách hàng đồng ý tái ký và gia hạn tên miền, hosting, server khi đến hạn',
+          unit: '%', target: 92, aggregation: 'avg', weight: 20, linkTo: 'iid_churn', rollupMode: 'manual',
+          owner: 'Trưởng CS', source: 'CRM Tenten'
+        }),
+        kpi({
+          id: 'dk_cs_csat', name: 'Điểm hài lòng khách hàng (CSAT)',
+          desc: 'Điểm đánh giá chất lượng hỗ trợ kỹ thuật và chăm sóc khách hàng Tenten (thang 5.0)',
+          unit: 'điểm', target: 4.8, aggregation: 'avg', weight: 15, linkTo: 'iid_churn', rollupMode: 'manual',
+          owner: 'CS Operations', source: 'Khảo sát sau hỗ trợ ticket/livechat'
+        })
+      ]
+    },
+    {
+      id: 'd_mkt', name: 'Marketing & Tăng trưởng', leader: '', managerId: null, color: DEPT_COLORS[2],
+      iidLinks: [{ kpiId: 'iid_rev', weight: 30 }],
+      kpis: [
+        kpi({
+          id: 'dk_mkt_mql', name: 'Khách hàng tiềm năng chất lượng (MQL)',
+          desc: 'Số lượng lead đăng ký dùng thử hoặc yêu cầu báo giá đủ tiêu chuẩn chuyển cho Sales',
+          unit: 'lead', target: 3600, weight: 25, linkTo: 'iid_rev', rollupMode: 'manual',
+          owner: 'Trưởng Marketing', source: 'HubSpot / CRM Tenten'
+        }),
+        kpi({
+          id: 'dk_mkt_pipe', name: 'Giá trị cơ hội tạo ra (Pipeline Generated)',
+          desc: 'Tổng giá trị tiềm năng của các lead được Marketing mang về cho đội Sales',
+          unit: 'tỷ', target: 900, weight: 25, linkTo: 'iid_rev', rollupMode: 'manual',
+          owner: 'Trưởng Marketing', source: 'CRM Tenten'
+        }),
+        kpi({
+          id: 'dk_mkt_cpl', name: 'Chi phí trên một Lead (CPL)',
+          desc: 'Chi phí quảng cáo chia cho số lượng MQL thu về (Mục tiêu dưới 800.000 VNĐ)',
+          unit: 'triệu', target: 0.8, aggregation: 'avg', direction: 'down', weight: 10, linkTo: 'iid_gm', rollupMode: 'manual',
+          owner: 'Performance Lead', source: 'Google & Meta Ads'
+        }),
+        kpi({
+          id: 'dk_mkt_content', name: 'Chiến dịch nội dung & SEO',
+          desc: 'Số lượng bài viết chuẩn SEO, case study và video ra mắt tính năng',
+          unit: 'bài', target: 240, type: 'activity', weight: 10, linkTo: 'iid_rev', rollupMode: 'manual',
+          owner: 'Content Lead', source: 'CMS Tenten Blog'
+        })
+      ]
+    },
+    {
+      id: 'd_ops', name: 'Vận hành & Kỹ thuật', leader: '', managerId: null, color: DEPT_COLORS[3],
+      iidLinks: [{ kpiId: 'iid_gm', weight: 25 }, { kpiId: 'iid_churn', weight: 15 }],
+      kpis: [
+        kpi({
+          id: 'dk_ops_uptime', name: 'Độ sẵn sàng hệ thống (SLA Uptime)',
+          desc: 'Tỷ lệ thời gian hoạt động ổn định của cụm máy chủ Cloud, DNS và Web Server Tenten',
+          unit: '%', target: 99.9, aggregation: 'avg', weight: 25, linkTo: 'iid_churn', rollupMode: 'manual',
+          owner: 'Trưởng Vận hành', source: 'Datadog / Zabbix Monitoring'
+        }),
+        kpi({
+          id: 'dk_ops_cost', name: 'Tối ưu chi phí hạ tầng / Doanh thu',
+          desc: 'Tỷ lệ chi phí thuê data center, điện, băng thông và license trên tổng doanh thu (Càng thấp càng tốt)',
+          unit: '%', target: 18, aggregation: 'avg', direction: 'down', weight: 20, linkTo: 'iid_gm', rollupMode: 'manual',
+          owner: 'Trưởng Vận hành', source: 'Báo cáo Kế toán chi phí'
+        }),
+        kpi({
+          id: 'dk_ops_mttr', name: 'Thời gian phục hồi sự cố (MTTR)',
+          desc: 'Mean Time To Recover: Thời gian trung bình giải quyết xong sự cố kỹ thuật cấp 1 & 2',
+          unit: 'giờ', target: 4, aggregation: 'avg', direction: 'down', weight: 15, linkTo: 'iid_churn', rollupMode: 'manual',
+          owner: 'SRE Lead', source: 'Jira Service Management'
+        })
+      ]
+    }
+  ];
+  depts.forEach(d => d.kpis.forEach(k => { k.monthly = Array(12).fill(null); }));
+
+  // 3. Nhân sự: Hoàn toàn sạch (0 nhân sự mẫu, sẵn sàng nhập danh sách thật)
+  const emps = [];
+
+  // 4. Tài khoản: DUY NHẤT Admin (Giám đốc Khối IID)
+  const users = [
+    {
+      id: 'u_admin',
+      name: 'Giám đốc Khối IID',
+      email: 'director.iid@gmo.vn',
+      password: 'password123',
+      role: 'admin',
+      title: 'Giám đốc Khối IID',
+      deptId: null,
+      empId: null
+    }
+  ];
+
+  return {
+    version: 5,
+    year: 2027,
+    currentMonth: 1, // Bắt đầu từ Tháng 1
+    currentUserId: 'u_admin', // Duy nhất Admin
+    users,
+    iid,
+    depts,
+    emps,
+    reviews: {}
+  };
+}
+
 function buildSampleData() {
   const rnd = seeded(2027);
 
