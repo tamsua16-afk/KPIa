@@ -1,8 +1,19 @@
+# Dependencies & system
+node_modules/
+.DS_Store
+Thumbs.db
+
+# Logs & temp
+*.log
+.vscode/
+.idea/
+
+# Local artifacts & scripts
 *.png
 site-deploy.tar.gz
 iid-kpi/
 qa.cjs
 preview.cjs
-node_modules/
 .package/
 preview.mjs
+
