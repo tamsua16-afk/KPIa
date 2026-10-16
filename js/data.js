@@ -529,7 +529,7 @@ function buildSampleData() {
   ];
 
   return {
-    version: 3,
+    version: 5,
     year: 2027,
     currentMonth: 9,
     currentUserId: 'u_admin', // mặc định là Admin

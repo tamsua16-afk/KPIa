@@ -58,6 +58,7 @@
     return k;
   }
   function normalize(d) {
+    d.version = 5;
     d.reviews = d.reviews || {};
     d.currentMonth = clamp(+d.currentMonth || 1, 1, 12);
     if (!Array.isArray(d.selectedMonths) || !d.selectedMonths.length) {
@@ -87,7 +88,7 @@
       const raw = localStorage.getItem(STORE);
       if (raw) {
         const d = JSON.parse(raw);
-        if (valid(d) && d.version >= 5) return normalize(d);
+        if (valid(d)) return normalize(d);
       }
     } catch (e) { /* ignore */ }
     return normalize(typeof buildCleanData === 'function' ? buildCleanData() : buildSampleData());
@@ -2171,13 +2172,27 @@
     if (scope === 'emp') { const d = deptById(empById(eid)?.deptId); linkOpts = (d?.kpis || []).map(x => [x.id, x.name]); linkLabel = `Liên kết lên KPI Bộ phận${d ? ' (' + d.name + ')' : ''}`; }
     const lvl = { iid: 'KPI Tổng IID', dept: 'KPI bộ phận', emp: 'KPI cá nhân' }[scope];
 
+    const calcRollup = (mode) => {
+      if (!kid) return null;
+      let linked = [];
+      if (scope === 'iid') {
+        S.depts.forEach(d => d.kpis.filter(dk => dk.linkTo === kid).forEach(dk => linked.push(dk)));
+      } else if (scope === 'dept') {
+        S.emps.filter(e => e.deptId === eid).forEach(e => e.kpis.filter(ek => ek.linkTo === kid).forEach(ek => linked.push(ek)));
+      }
+      if (!linked.length) return null;
+      if (mode === 'rollup_sum') return sum(linked.map(x => x.target));
+      if (mode === 'rollup_avg') return Math.round(sum(linked.map(x => x.target)) / linked.length * 100) / 100;
+      return null;
+    };
+
     openModal(`${old ? '✎ Sửa' : '＋ Thêm'} ${lvl}`, `
       ${field('Tên KPI *', `<input type="text" name="name" required value="${esc(k.name)}" placeholder="VD: Doanh thu ký mới" id="f-kpi-name">`, true)}
-      ${field('Cơ chế thiết lập (Roll-up) *', `<select name="rollupMode">
+      ${field('Cơ chế thiết lập (Roll-up) *', `<select name="rollupMode" id="f-rollup-mode">
         ${Object.entries(ROLLUP_MODES).map(([v, l]) => opt(v, l, (k.rollupMode || 'manual') === v)).join('')}
-      </select>`, true, 'Nếu chọn Roll-up, mục tiêu và số liệu hàng tháng sẽ được tự động tính từ các KPI con liên kết lên')}
+      </select>`, true, '<span id="f-rollup-help" class="small">Nếu chọn Roll-up, mục tiêu và số liệu hàng tháng sẽ được tự động tính từ các KPI con liên kết lên. Chọn "Nhập thủ công" để tự đặt mục tiêu.</span>')}
       ${field('Đơn vị', `<input type="text" name="unit" value="${esc(k.unit)}" placeholder="tỷ, %, KH...">`)}
-      ${field('Mục tiêu năm *', `<input type="number" step="any" name="target" value="${k.target || ''}" required>`)}
+      ${field('Mục tiêu năm *', `<input type="number" step="any" name="target" id="f-target" value="${k.target || ''}" required><div id="f-target-hint" class="small" style="margin-top:4px"></div>`)}
       ${field('Tỷ trọng (%)', `<input type="number" step="any" min="0" max="100" name="weight" value="${k.weight || ''}">`)}
       ${field('Chiều hướng', `<select name="direction">${opt('up', '↑ Càng cao càng tốt', k.direction === 'up')}${opt('down', '↓ Càng thấp càng tốt', k.direction === 'down')}</select>`)}
       ${field('Cách tổng hợp', `<select name="aggregation">${Object.entries(AGGREGATIONS).map(([v, l]) => opt(v, l, k.aggregation === v)).join('')}</select>`, false, 'Cộng dồn: mục tiêu được phân bổ đều 12 tháng')}
@@ -2189,16 +2204,53 @@
     `, fd => {
       const v = Object.fromEntries(fd);
       if (!v.name.trim()) { toast('Vui lòng nhập tên KPI', true); return false; }
-      if (!(+v.target > 0) && v.rollupMode === 'manual') { toast('Mục tiêu năm phải lớn hơn 0', true); return false; }
+      let targetVal = +v.target || 0;
+      let rollupMode = v.rollupMode || 'manual';
+      const autoVal = calcRollup(rollupMode);
+      if (rollupMode !== 'manual' && autoVal !== null && Math.abs(targetVal - autoVal) > 1e-6) {
+        rollupMode = 'manual';
+      }
+      if (!(targetVal > 0) && rollupMode === 'manual') { toast('Mục tiêu năm phải lớn hơn 0', true); return false; }
       const patch = {
-        name: v.name.trim(), unit: v.unit.trim(), target: +v.target || 0, weight: +v.weight || 0,
-        rollupMode: v.rollupMode || 'manual',
+        name: v.name.trim(), unit: v.unit.trim(), target: targetVal, weight: +v.weight || 0,
+        rollupMode,
         direction: v.direction, aggregation: v.aggregation, type: v.type, frequency: v.frequency,
         owner: v.owner.trim(), source: v.source.trim(), linkTo: linkOpts ? (v.linkTo || null) : null
       };
       if (old) Object.assign(old, patch); else list.push(Object.assign(k, patch));
       computeRollups();
-      save(); render(); toast(old ? 'Đã cập nhật KPI' : 'Đã thêm KPI mới');
+      save(); render();
+      toast(old ? (rollupMode === 'manual' && v.rollupMode !== 'manual' ? `Đã lưu mục tiêu: ${fmt(targetVal)} (chuyển sang Thủ công)` : 'Đã cập nhật KPI thành công') : 'Đã thêm KPI mới');
+    }, f => {
+      const modeSel = $('#f-rollup-mode', f);
+      const targetInp = $('#f-target', f);
+      const hint = $('#f-target-hint', f);
+      const updateHint = () => {
+        const mode = modeSel?.value || 'manual';
+        const auto = calcRollup(mode);
+        if (mode !== 'manual' && auto !== null) {
+          hint.innerHTML = `<span style="color:var(--blue)">⚡ Tự động tính từ các KPI cấp dưới: <b>${fmt(auto)}</b>. Nếu sửa ô này, hệ thống sẽ chuyển sang "Nhập thủ công" để bảo toàn mục tiêu.</span>`;
+        } else if (mode !== 'manual') {
+          hint.innerHTML = `<span class="muted">Chưa có KPI cấp dưới liên kết. Dùng mục tiêu bạn nhập.</span>`;
+        } else {
+          hint.innerHTML = `<span class="muted">Mục tiêu cố định do bạn tự thiết lập.</span>`;
+        }
+      };
+      modeSel?.addEventListener('change', () => {
+        const mode = modeSel.value;
+        const auto = calcRollup(mode);
+        if (auto !== null && targetInp) targetInp.value = auto;
+        updateHint();
+      });
+      targetInp?.addEventListener('input', () => {
+        const mode = modeSel?.value;
+        const auto = calcRollup(mode);
+        if (mode && mode !== 'manual' && auto !== null && Math.abs(+targetInp.value - auto) > 1e-6) {
+          modeSel.value = 'manual';
+          hint.innerHTML = `<span style="color:var(--green)">✓ Đã chuyển sang "Nhập thủ công" để bảo toàn mục tiêu bạn vừa nhập.</span>`;
+        }
+      });
+      updateHint();
     });
   }
 
