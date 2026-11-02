@@ -8,12 +8,19 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Local artifacts & scripts
-*.png
+# Local artifacts & worker scripts (excluded from static hosting root)
+/*.png
 site-deploy.tar.gz
 iid-kpi/
 qa.cjs
 preview.cjs
 .package/
 preview.mjs
-
+.openai/
+build.mjs
+dist/
+drizzle/
+package.json
+package-lock.json
+tests/
+worker/
