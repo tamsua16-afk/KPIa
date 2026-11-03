@@ -50,10 +50,19 @@ const RATINGS = [
   { code: 'D', min: -Infinity, label: 'Không đạt' }
 ];
 
-const MONTHS = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9', 'T10', 'T11', 'T12'];
+const MONTHS = ['T12/26', 'T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9', 'T10', 'T11', 'T12'];
+const MONTH_NAMES = [
+  'Tháng 12/2026 (Chạy thử)',
+  'Tháng 1/2027', 'Tháng 2/2027', 'Tháng 3/2027', 'Tháng 4/2027',
+  'Tháng 5/2027', 'Tháng 6/2027', 'Tháng 7/2027', 'Tháng 8/2027',
+  'Tháng 9/2027', 'Tháng 10/2027', 'Tháng 11/2027', 'Tháng 12/2027'
+];
 const QUARTERS = [
-  { q: 1, from: 1, to: 3 }, { q: 2, from: 4, to: 6 },
-  { q: 3, from: 7, to: 9 }, { q: 4, from: 10, to: 12 }
+  { q: 0, from: 0, to: 0, label: 'Tháng 12/2026 (Chạy thử)', short: 'T12/2026' },
+  { q: 1, from: 1, to: 3, label: 'Quý 1/2027', short: 'Quý 1' },
+  { q: 2, from: 4, to: 6, label: 'Quý 2/2027', short: 'Quý 2' },
+  { q: 3, from: 7, to: 9, label: 'Quý 3/2027', short: 'Quý 3' },
+  { q: 4, from: 10, to: 12, label: 'Quý 4/2027', short: 'Quý 4' }
 ];
 const FREQUENCIES = ['Hàng tháng', 'Hàng quý', 'Hàng tuần'];
 const AGGREGATIONS = { sum: 'Cộng dồn (lũy kế)', avg: 'Trung bình', last: 'Giá trị kỳ gần nhất' };
@@ -72,26 +81,40 @@ function seeded(seed) {
   return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
 }
 
-function genMonthly(kpi, rnd, months = 9, bias = 0) {
-  const arr = Array(12).fill(null);
+function genMonthlyTargets(kpi) {
+  const t = +kpi.target || 0;
+  const mt = kpi.aggregation === 'sum' ? Math.round((t / 12) * 100) / 100 : t;
+  return Array(MONTHS.length).fill(mt);
+}
+
+function genMonthly(kpi, rnd, months = 10, bias = 0) {
+  const arr = Array(MONTHS.length).fill(null);
   for (let m = 0; m < months; m++) {
     const f = 0.86 + rnd() * 0.26 + bias + m * 0.004;
+    const mt = (Array.isArray(kpi.monthlyTargets) && kpi.monthlyTargets[m] !== null && kpi.monthlyTargets[m] !== undefined)
+      ? +kpi.monthlyTargets[m]
+      : (kpi.aggregation === 'sum' ? kpi.target / 12 : kpi.target);
     let v;
-    if (kpi.aggregation === 'sum') v = (kpi.target / 12) * f;
-    else if (kpi.direction === 'down') v = kpi.target * (2 - f);
-    else v = kpi.target * f;
+    if (kpi.aggregation === 'sum') v = mt * f;
+    else if (kpi.direction === 'down') v = mt * (2 - f);
+    else v = mt * f;
     arr[m] = Math.round(v * 100) / 100;
   }
   return arr;
 }
 
 function kpi(o) {
-  return Object.assign({
+  const obj = Object.assign({
     id: uid(), name: '', desc: '', unit: '', target: 0, direction: 'up', aggregation: 'sum',
     type: 'outcome', owner: '', source: '', frequency: 'Hàng tháng', weight: 0, linkTo: null,
     rollupMode: 'manual', // 'manual' | 'rollup_sum' | 'rollup_avg'
-    monthly: Array(12).fill(null)
+    monthlyTargets: null,
+    monthly: Array(MONTHS.length).fill(null)
   }, o);
+  if (!Array.isArray(obj.monthlyTargets)) {
+    obj.monthlyTargets = genMonthlyTargets(obj);
+  }
+  return obj;
 }
 
 /* ---------- Khởi tạo Dữ liệu sạch Sẵn sàng Áp dụng Thực tế (Chỉ giữ Admin) ---------- */
@@ -130,7 +153,10 @@ function buildCleanData() {
     })
   ];
   [30, 25, 15, 15, 15].forEach((w, i) => { iid[i].weight = w; });
-  iid.forEach(k => { k.monthly = Array(12).fill(null); });
+  iid.forEach(k => {
+    k.monthlyTargets = genMonthlyTargets(k);
+    k.monthly = Array(MONTHS.length).fill(null);
+  });
 
   // 2. 4 Bộ phận Khối IID (Sẵn sàng để gán nhân sự & quản trị)
   const depts = [
@@ -237,7 +263,10 @@ function buildCleanData() {
       ]
     }
   ];
-  depts.forEach(d => d.kpis.forEach(k => { k.monthly = Array(12).fill(null); }));
+  depts.forEach(d => d.kpis.forEach(k => {
+    k.monthlyTargets = genMonthlyTargets(k);
+    k.monthly = Array(MONTHS.length).fill(null);
+  }));
 
   // 3. Nhân sự: Hoàn toàn sạch (0 nhân sự mẫu, sẵn sàng nhập danh sách thật)
   const emps = [];
@@ -257,9 +286,10 @@ function buildCleanData() {
   ];
 
   return {
-    version: 5,
+    version: 6,
     year: 2027,
-    currentMonth: 1, // Bắt đầu từ Tháng 1
+    currentMonth: 0, // Bắt đầu chạy thử từ Tháng 12/2026 (index 0)
+    selectedMonths: [0],
     currentUserId: 'u_admin', // Duy nhất Admin
     users,
     iid,
@@ -306,7 +336,10 @@ function buildSampleData() {
     })
   ];
   [30, 25, 15, 15, 15].forEach((w, i) => { iid[i].weight = w; });
-  iid.forEach(k => { k.monthly = genMonthly(k, rnd); });
+  iid.forEach(k => {
+    k.monthlyTargets = genMonthlyTargets(k);
+    k.monthly = genMonthly(k, rnd, 10);
+  });
 
   // 2. Bộ phận (Manager quản lý)
   const depts = [
@@ -413,7 +446,10 @@ function buildSampleData() {
       ]
     }
   ];
-  depts.forEach((d, i) => d.kpis.forEach(k => { k.monthly = genMonthly(k, rnd, 9, i === 2 ? -0.06 : 0); }));
+  depts.forEach((d, i) => d.kpis.forEach(k => {
+    k.monthlyTargets = genMonthlyTargets(k);
+    k.monthly = genMonthly(k, rnd, 10, i === 2 ? -0.06 : 0);
+  }));
 
   const E = (o) => Object.assign({ id: uid('e'), role: 'staff', iidLinks: [], deptLinks: [], kpis: [] }, o);
 
@@ -512,7 +548,10 @@ function buildSampleData() {
       ]
     })
   ];
-  emps.forEach((e, i) => e.kpis.forEach(k => { k.monthly = genMonthly(k, rnd, 9, (i % 3 - 1) * 0.04); }));
+  emps.forEach((e, i) => e.kpis.forEach(k => {
+    k.monthlyTargets = genMonthlyTargets(k);
+    k.monthly = genMonthly(k, rnd, 10, (i % 3 - 1) * 0.04);
+  }));
 
   // 4. Danh sách tài khoản người dùng đăng nhập
   const users = [
@@ -529,9 +568,10 @@ function buildSampleData() {
   ];
 
   return {
-    version: 5,
+    version: 6,
     year: 2027,
-    currentMonth: 9,
+    currentMonth: 0,
+    selectedMonths: [0],
     currentUserId: 'u_admin', // mặc định là Admin
     users,
     iid,

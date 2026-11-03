@@ -1055,3 +1055,161 @@ td.col-act { text-align: right; }
   .donut-wrap { flex-direction: column; align-items: stretch; }
   .donut { margin: 0 auto; }
 }
+
+
+/* =========================================================
+   SET KPI THEO THÁNG & KỲ CHẠY THỬ THÁNG 12/2026
+   ========================================================= */
+.modal.modal-xl {
+  width: min(1280px, 98vw);
+}
+.month-check-card.pilot-card {
+  grid-column: 1 / -1;
+  background: #fffbeb;
+  border-color: #fcd34d;
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+.month-check-card.pilot-card:hover {
+  border-color: #f59e0b;
+  background: #fef3c7;
+}
+.month-check-card.pilot-card.active {
+  background: #eff6ff;
+  border-color: var(--primary);
+}
+.pilot-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+.month-check-card.pilot-card.active .pilot-badge {
+  background: var(--primary);
+  color: #ffffff;
+  border-color: var(--primary);
+}
+
+.track-table th.pilot-col {
+  background: #fffbeb;
+  color: #b45309;
+}
+.track-table th.pilot-col.cur-month {
+  background: var(--primary-light);
+  color: var(--primary);
+}
+.track-table td.pilot-cell {
+  background: rgba(254, 243, 199, 0.25);
+}
+
+.cell-input.target-input {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: var(--navy);
+}
+.cell-input.target-input.filled {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: var(--primary);
+}
+.cell-input.target-input:focus {
+  border-color: var(--primary);
+  background: #ffffff;
+}
+.cell-target-sub {
+  font-size: 10.5px;
+  color: var(--muted);
+  text-align: right;
+  margin-top: 3px;
+  white-space: nowrap;
+}
+.cell-target-sub b {
+  color: var(--navy);
+  font-weight: 700;
+}
+
+.dual-cell-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+.dual-cell-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.dual-cell-lbl {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  min-width: 20px;
+  text-align: right;
+}
+.dual-cell-lbl.t { color: var(--primary); }
+.dual-cell-lbl.a { color: var(--teal); }
+
+.monthly-kpi-box {
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  padding: 14px;
+  background: #f8fafc;
+}
+.monthly-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+.monthly-kpi-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #ffffff;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+.monthly-kpi-item.pilot {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  grid-column: span 2;
+}
+.monthly-kpi-item label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.monthly-kpi-item.pilot label {
+  color: #b45309;
+}
+.monthly-kpi-item input {
+  padding: 5px 7px;
+  font-size: 12.5px;
+  font-weight: 700;
+  text-align: right;
+  width: 100%;
+}
+
+.emp-group-header td {
+  background: linear-gradient(90deg, #f0f7fd 0%, #f8fafc 100%);
+  font-weight: 700;
+  color: var(--navy);
+  padding: 10px 14px !important;
+  border-top: 2px solid var(--primary-border);
+}
+
+@media (max-width: 900px) {
+  .monthly-kpi-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .monthly-kpi-item.pilot {
+    grid-column: 1 / -1;
+  }
+}

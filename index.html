@@ -4,12 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Tenten.vn by GMO · KPI 2027 – Khối IID | Quản trị & Đánh giá Hiệu suất</title>
-  <meta name="description" content="Hệ thống quản lý, cascade và đánh giá KPI 2027 Khối IID - Tenten.vn by GMO: Mục tiêu Khối IID → Bộ phận → Cá nhân, theo dõi hàng tháng và review hàng quý." />
+  <meta name="description" content="Hệ thống quản lý, cascade và đánh giá KPI 2027 Khối IID - Tenten.vn by GMO: Mục tiêu Khối IID → Bộ phận → Cá nhân, thiết lập & theo dõi hàng tháng (từ T12/2026) và review hàng quý." />
   <link rel="icon" type="image/png" href="assets/tenten-logo.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=202709" />
+  <link rel="stylesheet" href="css/styles.css?v=202712" />
 </head>
 <body>
   <div class="light-ambient" aria-hidden="true"></div>
@@ -21,7 +21,7 @@
       </div>
       <div class="brand-tag-row">
         <span class="brand-badge-iid">KHỐI IID</span>
-        <span class="brand-badge-year">KPI 2027</span>
+        <span class="brand-badge-year">T12/26 – 2027</span>
       </div>
     </div>
     <nav class="nav" id="nav">
@@ -30,7 +30,7 @@
       <button class="nav-item" data-view="depts" id="nav-depts"><i>②</i>KPI Bộ phận</button>
       <button class="nav-item" data-view="emps" id="nav-emps"><i>③</i>KPI Cá nhân</button>
       <div class="nav-sep">Vận hành & Đánh giá</div>
-      <button class="nav-item" data-view="tracking" id="nav-tracking"><i>▤</i>Theo dõi hàng tháng</button>
+      <button class="nav-item" data-view="tracking" id="nav-tracking"><i>▤</i>Theo dõi & Set KPI tháng</button>
       <button class="nav-item" data-view="review" id="nav-review"><i>★</i>Review hàng quý</button>
       <button class="nav-item" data-view="cascade" id="nav-cascade"><i>⋔</i>Cây liên kết KPI</button>
       <button class="nav-item" data-view="rules" id="nav-rules"><i>✓</i>Kiểm tra nguyên tắc <b class="nav-badge" id="rules-badge"></b></button>
@@ -71,21 +71,22 @@
       </div>
       <div class="topbar-actions">
         <div class="month-filter-dropdown" id="month-filter-dropdown">
-          <button type="button" class="month-filter-btn" id="btn-month-filter" data-action="toggle-month-menu" aria-haspopup="true" aria-expanded="false" title="Bấm để chọn 1 hoặc nhiều tháng">
+          <button type="button" class="month-filter-btn" id="btn-month-filter" data-action="toggle-month-menu" aria-haspopup="true" aria-expanded="false" title="Bấm để chọn kỳ dữ liệu (T12/2026 & năm 2027)">
             <span class="month-filter-ic">📅</span>
-            <span class="month-filter-label">Dữ liệu:</span>
-            <b class="month-filter-val" id="month-filter-display">T1 – T9 (9 tháng)</b>
+            <span class="month-filter-label">Kỳ dữ liệu:</span>
+            <b class="month-filter-val" id="month-filter-display">Tháng 12/2026 (Chạy thử)</b>
             <span class="month-filter-caret">▾</span>
           </button>
           <div class="month-menu-popover" id="month-menu-popover" hidden>
             <div class="month-menu-head">
               <div class="month-menu-title">
                 <b>Chọn tháng tính dữ liệu</b>
-                <span class="small muted" id="month-menu-count">Đã chọn 9/12 tháng</span>
+                <span class="small muted" id="month-menu-count">Đã chọn 1/13 tháng</span>
               </div>
               <div class="month-quick-btns">
+                <button type="button" class="btn-xs ghost" data-action="month-quick" data-mode="pilot">🚀 T12/26</button>
+                <button type="button" class="btn-xs ghost" data-action="month-quick" data-mode="year2027">Năm 2027</button>
                 <button type="button" class="btn-xs ghost" data-action="month-quick" data-mode="all">Tất cả</button>
-                <button type="button" class="btn-xs ghost" data-action="month-quick" data-mode="ytd">YTD</button>
                 <button type="button" class="btn-xs ghost" data-action="month-quick" data-mode="clear">Xóa</button>
               </div>
             </div>
@@ -123,7 +124,7 @@
   </div>
 
   <div class="modal-backdrop" id="modal" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal" id="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal-head">
         <h3 id="modal-title"></h3>
         <button class="icon-btn" data-action="close-modal" id="modal-close" aria-label="Đóng">✕</button>
@@ -143,7 +144,7 @@
           <img src="assets/tenten-logo.png" alt="Tenten.vn by GMO" class="login-logo-img" />
         </div>
         <h2>HỆ THỐNG KPI 2027</h2>
-        <p class="small muted">Khối IID · Cổng quản lý mục tiêu & đánh giá hiệu suất</p>
+        <p class="small muted">Khối IID · Cổng quản lý mục tiêu & đánh giá hiệu suất (Chạy thử từ T12/2026)</p>
       </div>
 
       <form id="login-form" class="login-form" novalidate>
@@ -168,7 +169,7 @@
     </div>
   </div>
 
-  <script src="js/data.js?v=202709"></script>
-  <script src="js/app.js?v=202709"></script>
+  <script src="js/data.js?v=202712"></script>
+  <script src="js/app.js?v=202712"></script>
 </body>
 </html>
