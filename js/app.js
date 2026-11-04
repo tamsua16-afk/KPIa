@@ -106,7 +106,33 @@
     }
 
     d.users = d.users || [];
-    d.users.forEach(u => { u.password = u.password || 'password123'; });
+    const existingAdmin = d.users.find(u => u.id === 'u_admin' || (u.email && u.email.toLowerCase() === 'director.iid@gmo.vn'));
+    const hasDucTam = d.users.some(u => u.email && u.email.toLowerCase() === 'ductam@runsystem.net');
+    if (existingAdmin && !hasDucTam) {
+      existingAdmin.id = 'u_admin';
+      existingAdmin.email = 'ductam@runsystem.net';
+      existingAdmin.password = 'Tenten2026@1';
+      existingAdmin.role = 'admin';
+    } else if (!hasDucTam) {
+      d.users.unshift({
+        id: 'u_admin',
+        name: 'Giám đốc Khối IID',
+        email: 'ductam@runsystem.net',
+        password: 'Tenten2026@1',
+        role: 'admin',
+        title: 'Giám đốc Khối IID',
+        deptId: null,
+        empId: null
+      });
+    }
+    d.users.forEach(u => {
+      if (u.email && u.email.toLowerCase() === 'ductam@runsystem.net') {
+        u.role = 'admin';
+        if (!u.password || u.password === 'password123') u.password = 'Tenten2026@1';
+      } else {
+        u.password = u.password || 'password123';
+      }
+    });
     d.currentUserId = d.currentUserId || (d.users[0]?.id || 'u_admin');
     d.iid.forEach(k => normKpi(k, isLegacy12));
     d.depts.forEach(x => {
@@ -148,7 +174,7 @@
   /* ---------- Phân quyền & Giới hạn dữ liệu (RBAC Data Scoping) ---------- */
   function curUser() {
     return S.users.find(u => u.id === S.currentUserId) || S.users[0] || {
-      id: 'u_admin', name: 'Giám đốc Khối', email: 'director.iid@gmo.vn', password: 'password123', role: 'admin', title: 'Giám đốc Khối'
+      id: 'u_admin', name: 'Giám đốc Khối', email: 'ductam@runsystem.net', password: 'Tenten2026@1', role: 'admin', title: 'Giám đốc Khối'
     };
   }
   const roleOf = u => ROLES[u?.role] || ROLES.staff;
@@ -3080,7 +3106,7 @@
           <div style="border:1px solid var(--line);border-radius:12px;padding:16px;background:#f8fafc;display:flex;align-items:center;justify-content:space-between;gap:12px">
             <div>
               <b style="color:var(--navy);font-size:14px">🧹 Làm sạch dữ liệu để ÁP DỤNG THỰC TẾ (Từ T12/2026)</b>
-              <div class="muted small" style="margin-top:4px">Xóa toàn bộ nhân sự mẫu, xóa toàn bộ tài khoản mẫu (chỉ giữ lại tài khoản Admin <code>director.iid@gmo.vn</code>), làm trống số liệu thực tế và đặt kỳ mặc định là <b>Tháng 12/2026</b>.</div>
+              <div class="muted small" style="margin-top:4px">Xóa toàn bộ nhân sự mẫu, xóa toàn bộ tài khoản mẫu (chỉ giữ lại tài khoản Admin <code>ductam@runsystem.net</code>), làm trống số liệu thực tế và đặt kỳ mặc định là <b>Tháng 12/2026</b>.</div>
             </div>
             <button type="button" class="btn sm" data-action="do-clean-reset">Làm sạch ngay</button>
           </div>
@@ -3273,7 +3299,7 @@
       case 'reset': resetData(); break;
       case 'do-clean-reset': {
         closeModal();
-        if (!confirm('Xác nhận làm sạch toàn bộ dữ liệu mẫu?\n- Xóa toàn bộ nhân sự mẫu\n- Chỉ giữ lại duy nhất tài khoản Admin (director.iid@gmo.vn)\n- Làm trống số liệu thực tế và đặt kỳ chạy thử mặc định là Tháng 12/2026\n(Hãy "Xuất JSON" nếu bạn cần sao lưu trước khi xóa).')) break;
+        if (!confirm('Xác nhận làm sạch toàn bộ dữ liệu mẫu?\n- Xóa toàn bộ nhân sự mẫu\n- Chỉ giữ lại duy nhất tài khoản Admin (ductam@runsystem.net)\n- Làm trống số liệu thực tế và đặt kỳ chạy thử mặc định là Tháng 12/2026\n(Hãy "Xuất JSON" nếu bạn cần sao lưu trước khi xóa).')) break;
         S = normalize(typeof buildCleanData === 'function' ? buildCleanData() : buildSampleData());
         UI.selDept = UI.selEmp = null;
         computeRollups();
@@ -3509,6 +3535,7 @@
   /* ---------- Init ---------- */
   fillMonthSelect();
   computeRollups();
+  save();
   const h = location.hash.slice(1);
   UI.view = RENDER[h] ? h : 'dashboard';
   render(true);

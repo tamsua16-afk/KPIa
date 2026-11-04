@@ -276,8 +276,8 @@ function buildCleanData() {
     {
       id: 'u_admin',
       name: 'Giám đốc Khối IID',
-      email: 'director.iid@gmo.vn',
-      password: 'password123',
+      email: 'ductam@runsystem.net',
+      password: 'Tenten2026@1',
       role: 'admin',
       title: 'Giám đốc Khối IID',
       deptId: null,
@@ -555,7 +555,7 @@ function buildSampleData() {
 
   // 4. Danh sách tài khoản người dùng đăng nhập
   const users = [
-    { id: 'u_admin', name: 'Giám đốc Khối IID', email: 'director.iid@gmo.vn', password: 'password123', role: 'admin', title: 'Giám đốc Khối IID', deptId: null, empId: null },
+    { id: 'u_admin', name: 'Giám đốc Khối IID', email: 'ductam@runsystem.net', password: 'Tenten2026@1', role: 'admin', title: 'Giám đốc Khối IID', deptId: null, empId: null },
     { id: 'u_mgr_sales', name: 'Nguyễn Minh Tuấn', email: 'tuan.nm@gmo.vn', password: 'password123', role: 'manager', title: 'Trưởng phòng Kinh doanh', deptId: 'd_sales', empId: 'emp_tuan' },
     { id: 'u_mgr_cs', name: 'Trần Thu Hà', email: 'ha.tt@gmo.vn', password: 'password123', role: 'manager', title: 'Trưởng Customer Success', deptId: 'd_cs', empId: 'emp_ha' },
     { id: 'u_mgr_mkt', name: 'Lê Hoàng Nam', email: 'nam.lh@gmo.vn', password: 'password123', role: 'manager', title: 'Trưởng Marketing', deptId: 'd_mkt', empId: 'emp_nam' },
