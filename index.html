@@ -147,29 +147,24 @@
         <p class="small muted">Khối IID · Cổng quản lý mục tiêu & đánh giá hiệu suất (Chạy thử từ T12/2026)</p>
       </div>
 
-      <form id="login-form" class="login-form" novalidate>
+      <form id="login-form" class="login-form" novalidate autocomplete="off">
         <div class="field full">
           <label for="login-email">Email công việc *</label>
-          <input type="email" id="login-email" name="email" required placeholder="VD: lan.dt@gmo.vn" autocomplete="username" />
+          <input type="email" id="login-email" name="email" required value="" placeholder="Nhập email công việc" autocomplete="off" />
         </div>
         <div class="field full">
           <label for="login-password">Mật khẩu *</label>
           <div class="password-wrap">
-            <input type="password" id="login-password" name="password" required placeholder="Nhập mật khẩu" autocomplete="current-password" />
+            <input type="password" id="login-password" name="password" required value="" placeholder="Nhập mật khẩu" autocomplete="new-password" />
             <button type="button" class="btn-toggle-pwd" id="btn-toggle-pwd" aria-label="Hiện/ẩn mật khẩu">👁</button>
           </div>
         </div>
         <button type="submit" class="btn" id="btn-do-login" style="width:100%;justify-content:center;margin-top:4px;padding:11px">Đăng nhập</button>
       </form>
-
-      <div class="demo-accounts">
-        <div class="small muted" style="margin-bottom:8px;font-weight:600">⚡ Tài khoản truy cập nhanh (Mật khẩu mặc định: password123):</div>
-        <div class="demo-btn-grid" id="demo-accounts-grid"></div>
-      </div>
     </div>
   </div>
 
-  <script src="js/data.js?v=202712"></script>
-  <script src="js/app.js?v=202712"></script>
+  <script src="js/data.js?v=202713"></script>
+  <script src="js/app.js?v=202713"></script>
 </body>
 </html>

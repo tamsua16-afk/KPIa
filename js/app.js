@@ -2037,18 +2037,15 @@
     overlay.removeAttribute('hidden');
     overlay.style.display = 'flex';
 
-    const demoGrid = $('#demo-accounts-grid');
-    if (demoGrid) {
-      demoGrid.innerHTML = S.users.slice(0, 4).map(u => {
-        const r = roleOf(u);
-        return `<button type="button" class="demo-acc-btn" data-action="quick-login" data-email="${esc(u.email)}">
-          <span class="role-pill ${r.id}" style="font-size:10px;padding:1px 6px">${r.badge}</span>
-          <div><b>${esc(u.name)}</b><span>${esc(u.email)} (MK: password123)</span></div>
-        </button>`;
-      }).join('');
+    const emailInp = $('#login-email');
+    const pwdInp = $('#login-password');
+    if (emailInp) emailInp.value = '';
+    if (pwdInp) {
+      pwdInp.value = '';
+      pwdInp.type = 'password';
     }
 
-    $('#login-email')?.focus();
+    emailInp?.focus();
   }
   function hideLoginOverlay() {
     const overlay = $('#login-overlay');
@@ -2069,6 +2066,14 @@
     if (u.password !== password) {
       toast('Mật khẩu không chính xác! Vui lòng thử lại.', true);
       return false;
+    }
+
+    const emailInp = $('#login-email');
+    const pwdInp = $('#login-password');
+    if (emailInp) emailInp.value = '';
+    if (pwdInp) {
+      pwdInp.value = '';
+      pwdInp.type = 'password';
     }
 
     try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
@@ -3356,15 +3361,6 @@
           save(); render();
           toast(`Đã xóa tài khoản ${u.name}`);
         }
-        break;
-      }
-
-      // Quick login từ màn hình đăng nhập
-      case 'quick-login': {
-        const email = ds.email;
-        $('#login-email').value = email;
-        $('#login-password').value = 'password123';
-        handleLogin(email, 'password123');
         break;
       }
 
