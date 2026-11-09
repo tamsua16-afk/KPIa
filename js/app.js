@@ -17,6 +17,8 @@
 
   const STORE = 'kpi2027_iid_v5';
   const ADMIN_ORIGIN_KEY = 'kpi2027_admin_origin';
+  const AUTH_SESSION_KEY = 'kpi2027_auth_session_v1';
+  const PREVIEW_SESSION_KEY = 'kpi2027_preview_uid_v1';
   const REVIEW_STATUS = [
     ['todo', 'Chưa bắt đầu', ''],
     ['self', 'Đã tự đánh giá', 'warn'],
@@ -474,11 +476,10 @@
       if (!remote.data || !valid(remote.data)) return true;
       if (!force && isUserEditing()) return true;
 
-      const curUid = S.currentUserId;
       const srv = normalize(remote.data);
-
-      if (isLoggedIn && curUid && srv.users.some(u => u.id === curUid)) {
-        srv.currentUserId = curUid;
+      const activeAuth = authUser(srv.users);
+      if (activeAuth) {
+        srv.currentUserId = activeAuth.id;
       }
       S = srv;
       try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (_) {}
@@ -495,8 +496,74 @@
     }
   }
 
+  function getSavedAuthSession() {
+    try {
+      const raw = localStorage.getItem(AUTH_SESSION_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return (parsed && (parsed.uid || parsed.email)) ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function setSavedAuthSession(u) {
+    if (!u) return;
+    try {
+      localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({
+        uid: u.id,
+        email: String(u.email || '').trim().toLowerCase(),
+        ts: Date.now()
+      }));
+    } catch (_) {}
+  }
+
+  function clearSavedAuthSession() {
+    try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (_) {}
+    try { sessionStorage.removeItem(PREVIEW_SESSION_KEY); } catch (_) {}
+    try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
+  }
+
+  function getPreviewUid() {
+    try {
+      return sessionStorage.getItem(PREVIEW_SESSION_KEY) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function setPreviewUid(uid) {
+    try {
+      if (uid) sessionStorage.setItem(PREVIEW_SESSION_KEY, String(uid));
+      else sessionStorage.removeItem(PREVIEW_SESSION_KEY);
+    } catch (_) {}
+  }
+
+  function isPreviewTab() {
+    const pUid = getPreviewUid();
+    return Boolean(pUid && S.users.some(u => u.id === pUid));
+  }
+
+  function authUser(usersList = S.users) {
+    const sess = getSavedAuthSession();
+    if (!sess || !Array.isArray(usersList)) return null;
+    if (sess.uid) {
+      const byId = usersList.find(u => u.id === sess.uid);
+      if (byId) return byId;
+    }
+    if (sess.email) {
+      const norm = String(sess.email).trim().toLowerCase();
+      const byEmail = usersList.find(u => String(u.email || '').trim().toLowerCase() === norm);
+      if (byEmail) return byEmail;
+    }
+    return null;
+  }
+
   function save(syncRemote = true) {
     if (syncRemote) S.updatedAt = Date.now();
+    // Không bao giờ để Tab xem góc nhìn (Preview Tab) ghi đè currentUserId của phiên chính
+    const realU = authUser();
+    if (realU) S.currentUserId = realU.id;
     try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (e) { toast('Không lưu được dữ liệu vào trình duyệt', true); }
     if (syncRemote && isLoggedIn) pushServer();
     updateBadge();
@@ -505,6 +572,13 @@
 
   /* ---------- Phân quyền & Giới hạn dữ liệu (RBAC Data Scoping) ---------- */
   function curUser() {
+    const pUid = getPreviewUid();
+    if (pUid) {
+      const pu = S.users.find(u => u.id === pUid);
+      if (pu) return pu;
+    }
+    const au = authUser();
+    if (au) return au;
     return S.users.find(u => u.id === S.currentUserId) || S.users[0] || {
       id: 'u_admin', name: 'Giám đốc Khối', email: 'ductam@runsystem.net', password: 'Tenten2026@1', role: 'admin', title: 'Giám đốc Khối'
     };
@@ -920,27 +994,59 @@
     if (navEmps) navEmps.innerHTML = `<i>③</i>${u.role === 'staff' ? 'KPI của tôi' : 'KPI Cá nhân'}`;
     const navDepts = $('#nav-depts');
     if (navDepts) navDepts.innerHTML = `<i>②</i>${u.role === 'staff' ? 'Bộ phận của tôi' : 'KPI Bộ phận'}`;
+
+    let banner = $('#preview-tab-banner');
+    if (isPreviewTab()) {
+      if (!banner) {
+        const mainEl = $('.main');
+        if (mainEl) {
+          banner = document.createElement('div');
+          banner.id = 'preview-tab-banner';
+          banner.className = 'preview-tab-banner';
+          mainEl.insertBefore(banner, mainEl.firstChild);
+        }
+      }
+      if (banner) {
+        banner.hidden = false;
+        banner.innerHTML = `
+          <div class="preview-banner-text">
+            <span>👁 <b>Góc nhìn xem thử (Tab độc lập):</b> Đang truy cập dưới quyền của <b>${esc(u.name)}</b></span>
+            <span class="role-pill ${r.id}">${r.badge}</span>
+            ${d ? `<span class="tag dept" style="font-size:10px">${esc(d.name)}</span>` : ''}
+            <span class="preview-banner-sub">· Phiên Admin ở Tab gốc vẫn giữ nguyên</span>
+          </div>
+          <button type="button" class="btn sm preview-exit-btn" data-action="exit-preview-tab">✕ Đóng Tab góc nhìn này</button>
+        `;
+      }
+    } else if (banner) {
+      banner.hidden = true;
+    }
   }
 
   function joinUserAsAdmin(uid) {
     const target = S.users.find(u => u.id === uid);
     if (!target) return;
-    try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
-    S.currentUserId = uid;
-    UI.selDept = target.deptId || null;
-    UI.selEmp = target.empId || null;
-    save();
-    navigate('dashboard');
-    toast(`Đang xem góc nhìn của: ${target.name} (${roleOf(target).badge})`);
+    const url = new URL(window.location.href);
+    url.searchParams.set('preview_uid', target.id);
+    url.hash = 'dashboard';
+    const win = window.open(url.toString(), '_blank');
+    if (!win) {
+      toast('⚠️ Trình duyệt đã chặn mở Tab mới! Vui lòng cho phép Pop-up trên trình duyệt.', true);
+      return;
+    }
+    toast(`🚀 Đã mở góc nhìn của "${target.name}" (${roleOf(target).badge}) trong Tab mới!`);
   }
 
   function exitImpersonate() {
+    setPreviewUid(null);
     try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
-    S.currentUserId = 'u_admin';
+    try { window.close(); } catch (_) {}
+    const au = authUser() || S.users.find(u => u.id === 'u_admin') || S.users[0];
+    if (au) S.currentUserId = au.id;
     UI.selDept = UI.selEmp = null;
-    save();
+    updateUserWidget();
     navigate('dashboard');
-    toast('✅ Đã quay lại quyền Admin (Giám đốc Khối)');
+    toast('✅ Đã thoát góc nhìn xem thử và quay lại phiên chính');
   }
 
   /* ---------- UI atoms ---------- */
@@ -2216,10 +2322,11 @@
   function viewUsers() {
     if (!isAdm()) return `<div class="card empty">Tính năng quản trị người dùng chỉ dành cho Admin (Giám đốc Khối).</div>`;
     const rolesList = Object.values(ROLES);
+    const curId = curUser().id;
     const userRows = S.users.map(u => {
       const r = roleOf(u);
       const d = deptById(u.deptId);
-      const isCur = u.id === S.currentUserId;
+      const isCur = u.id === curId;
       return `<tr>
         <td>
           <div class="row">
@@ -2233,7 +2340,7 @@
         <td>${d ? `<span class="tag dept">${esc(d.name)}</span>` : '<span class="muted small">Toàn Khối (Khối IID)</span>'}</td>
         <td><code>${esc(u.id === 'u_admin' ? '••••••••' : (u.password || 'password123'))}</code></td>
         <td class="num" style="white-space:nowrap">
-          ${!isCur ? `<button class="btn sm" data-action="admin-join-user" data-uid="${u.id}" title="Đăng nhập ngay dưới góc nhìn của tài khoản này">🚀 Join / Xem góc nhìn</button>` : '<span class="tag good" style="font-weight:700">✓ Đang dùng</span>'}
+          ${!isCur ? `<button class="btn sm" data-action="admin-join-user" data-uid="${u.id}" title="Mở Tab mới để xem góc nhìn của tài khoản này (giữ nguyên phiên Admin hiện tại)">🚀 Join / Xem góc nhìn ↗</button>` : '<span class="tag good" style="font-weight:700">✓ Đang dùng</span>'}
           <button class="btn ghost sm" title="Đặt lại mật khẩu về password123" data-action="admin-reset-pwd" data-uid="${u.id}">Reset MK</button>
           <button class="icon-btn" title="Sửa tài khoản" data-action="edit-user" data-uid="${u.id}">✎</button>
           ${(!isCur && u.id !== 'u_admin') ? `<button class="icon-btn del" title="Xóa tài khoản" data-action="del-user" data-uid="${u.id}">🗑</button>` : ''}
@@ -2368,8 +2475,9 @@
       <div class="field full">
         <div class="profile-actions-grid" style="${isAdm() ? '' : 'grid-template-columns:1fr'}">
           <button type="button" class="btn" data-action="change-pwd-modal">🔑 Đổi mật khẩu của tôi</button>
-          ${isAdm() ? '<button type="button" class="btn ghost" data-action="switch-user-modal">👥 Chuyển góc nhìn (Admin)</button>' : ''}
-          <button type="button" class="btn ghost danger-hover" data-action="do-logout" style="grid-column: 1 / -1">🚪 Đăng xuất khỏi hệ thống</button>
+          ${isAdm() ? '<button type="button" class="btn ghost" data-action="switch-user-modal">👥 Mở góc nhìn nhân sự (Tab mới)</button>' : ''}
+          ${isPreviewTab() ? '<button type="button" class="btn ghost" data-action="exit-preview-tab" style="grid-column: 1 / -1">✕ Đóng Tab xem góc nhìn này</button>' : ''}
+          <button type="button" class="btn ghost danger-hover" data-action="do-logout" style="grid-column: 1 / -1">${isPreviewTab() ? '🚪 Thoát góc nhìn xem thử' : '🚪 Đăng xuất khỏi hệ thống'}</button>
         </div>
       </div>
     `, null, null, { viewOnly: true });
@@ -2532,6 +2640,8 @@
     setLoginError('');
 
     try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
+    setPreviewUid(null);
+    setSavedAuthSession(u);
     isLoggedIn = true;
     SYNC.warned = false;
     document.body.classList.remove('auth-locked');
@@ -2553,10 +2663,11 @@
     if (!isAdm()) {
       return accountModal();
     }
+    const curId = curUser().id;
     const items = S.users.map(u => {
       const r = roleOf(u);
       const d = deptById(u.deptId);
-      const isCur = u.id === S.currentUserId;
+      const isCur = u.id === curId;
       const c = d?.color || '#0068b7';
       const av = avatar(userInitials(u), c, 40);
       return `<div class="user-select-item ${isCur ? 'current' : ''}" data-action="switch-user" data-uid="${u.id}">
@@ -2568,12 +2679,12 @@
           </div>
           <div class="user-select-sub">${esc(u.email)} · ${d ? esc(d.name) : 'Toàn Khối IID'} (${esc(u.title || '')})</div>
         </div>
-        ${isCur ? '<span class="tag good">Đang chọn</span>' : '<button type="button" class="btn sm ghost">Chọn</button>'}
+        ${isCur ? '<span class="tag good">Đang dùng</span>' : '<button type="button" class="btn sm ghost">Mở Tab mới ↗</button>'}
       </div>`;
     }).join('');
 
-    openModal('👥 Chuyển đổi tài khoản (Demo kiểm thử)', `
-      <div class="field full"><span class="help">Chọn nhanh tài khoản để kiểm tra góc nhìn và quyền hạn tương ứng.</span></div>
+    openModal('👥 Xem góc nhìn tài khoản khác (Mở Tab mới)', `
+      <div class="field full"><span class="help">Chọn tài khoản để mở góc nhìn kiểm thử trong <b>Tab trình duyệt mới</b>. Phiên đăng nhập Admin tại Tab hiện tại vẫn được giữ nguyên 100%.</span></div>
       <div class="user-select-list">${items}</div>
     `, null, null, { viewOnly: true });
   }
@@ -3869,18 +3980,23 @@
       case 'account-modal': accountModal(); break;
       case 'change-pwd-modal': changePasswordModal(); break;
       case 'switch-user-modal': switchUserModal(); break;
+      case 'exit-preview-tab':
+        closeModal();
+        exitImpersonate();
+        break;
       case 'do-logout':
+        closeModal();
+        if (isPreviewTab()) {
+          exitImpersonate();
+          break;
+        }
+        clearSavedAuthSession();
         isLoggedIn = false;
         document.body.classList.add('auth-locked');
-        closeModal();
         showLoginOverlay();
         toast('Đã đăng xuất khỏi tài khoản.');
         break;
       case 'switch-to-admin':
-        if (!isAdm()) {
-          toast('Bạn không có quyền chuyển sang Admin!', true);
-          break;
-        }
         exitImpersonate();
         break;
       case 'admin-join-user':
@@ -3897,15 +4013,11 @@
           toast('Chỉ tài khoản Admin mới có quyền chuyển đổi góc nhìn!', true);
           break;
         }
-        try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
-        const u = S.users.find(x => x.id === ds.uid);
-        if (u) {
-          S.currentUserId = u.id;
-          UI.selDept = u.deptId || null;
-          UI.selEmp = u.empId || null;
-          save(); render(true);
-          toast(`Đã chuyển sang: ${u.name} (${roleOf(u).badge})`);
+        if (ds.uid === curUser().id) {
+          toast('Bạn đang ở góc nhìn của tài khoản này rồi.');
+          break;
         }
+        joinUserAsAdmin(ds.uid);
         break;
       }
       case 'admin-reset-pwd': {
@@ -4099,13 +4211,38 @@
   window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (RENDER[h] && h !== UI.view) navigate(h); });
 
   /* ---------- Init ---------- */
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const previewFromUrl = urlParams.get('preview_uid');
+    if (previewFromUrl) {
+      setPreviewUid(previewFromUrl);
+      urlParams.delete('preview_uid');
+      const cleanSearch = urlParams.toString();
+      const cleanUrl = window.location.pathname + (cleanSearch ? '?' + cleanSearch : '') + (window.location.hash || '#dashboard');
+      history.replaceState(null, '', cleanUrl);
+    }
+  } catch (_) {}
+
   fillMonthSelect();
   computeRollups();
   save(false);
   const h = location.hash.slice(1);
   UI.view = RENDER[h] ? h : 'dashboard';
-  render(true);
-  showLoginOverlay();
+
+  if (isPreviewTab() || authUser() || getSavedAuthSession()) {
+    isLoggedIn = true;
+    document.body.classList.remove('auth-locked');
+    const initU = curUser();
+    UI.selDept = initU.deptId || null;
+    UI.selEmp = initU.empId || null;
+    hideLoginOverlay();
+    render(true);
+  } else {
+    isLoggedIn = false;
+    render(true);
+    showLoginOverlay();
+  }
+
   syncFromServer();
   // Định kỳ lấy dữ liệu mới nhất từ Server (khi không đang chỉnh sửa) để các máy luôn thấy thay đổi của nhau
   setInterval(() => { if (document.visibilityState === 'visible') syncFromServer(); }, 30000);
