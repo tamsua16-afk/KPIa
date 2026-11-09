@@ -2422,6 +2422,14 @@
   }
 
   /* ---------- Phân quyền, Tài khoản & Mật khẩu ---------- */
+  function isUserPasswordChanged(u) {
+    if (!u) return false;
+    if (u.id === 'u_admin' || u.role === 'admin') return true;
+    if (u.pwdChanged) return true;
+    const pwd = String(u.password || 'password123').replace(/[\u200B-\u200D\uFEFF\r\n]/g, '').trim();
+    return Boolean(pwd && pwd !== 'password123');
+  }
+
   function viewUsers() {
     if (!isAdm()) return `<div class="card empty">Tính năng quản trị người dùng chỉ dành cho Admin (Giám đốc Khối).</div>`;
     const rolesList = Object.values(ROLES);
@@ -2436,6 +2444,10 @@
             ? `<div style="display:flex;flex-wrap:wrap;gap:4px">${uDepts.map(x => `<span class="tag dept">${esc(x.name)}</span>`).join('')}</div>`
             : '<span class="muted small">Chưa gán</span>');
       const isCur = u.id === curId;
+      const pwdMasked = isUserPasswordChanged(u);
+      const pwdCellHtml = pwdMasked
+        ? `<div class="row" style="gap:6px"><code>••••••••</code>${u.id !== 'u_admin' ? '<span class="tag good" style="font-size:10.5px;padding:1px 6px" title="Mật khẩu đã được thay đổi và tự động ẩn bảo mật">🔒 Đã đổi MK</span>' : ''}</div>`
+        : `<code>${esc(u.password || 'password123')}</code>`;
       return `<tr>
         <td>
           <div class="row">
@@ -2447,7 +2459,7 @@
         <td><span class="role-pill ${r.id}">${r.badge}</span></td>
         <td>${esc(u.title || '—')}</td>
         <td>${deptCellHtml}</td>
-        <td><code>${esc(u.id === 'u_admin' ? '••••••••' : (u.password || 'password123'))}</code></td>
+        <td>${pwdCellHtml}</td>
         <td class="num" style="white-space:nowrap">
           ${!isCur ? `<button class="btn sm" data-action="admin-join-user" data-uid="${u.id}" title="Mở Tab mới để xem góc nhìn của tài khoản này (giữ nguyên phiên Admin hiện tại)">🚀 Join / Xem góc nhìn ↗</button>` : '<span class="tag good" style="font-weight:700">✓ Đang dùng</span>'}
           ${u.role !== 'admin' ? `<button class="btn ghost sm" title="Gán 1 hoặc nhiều Bộ phận / Team quản lý cho tài khoản này" data-action="assign-teams" data-uid="${u.id}">🏢 Gán Team (${uDepts.length})</button>` : ''}
@@ -2626,8 +2638,13 @@
       }
 
       u.password = newPass;
+      u.pwdChanged = cleanPwdStr(newPass) !== 'password123';
+      if (!isPreviewTab() && u.id === S.currentUserId) {
+        setSavedAuthSession(u);
+      }
       save();
-      toast('✅ Đã đổi mật khẩu thành công! Mật khẩu mới đã được cập nhật.');
+      render();
+      toast('✅ Đã đổi mật khẩu thành công! Mật khẩu mới đã được cập nhật và bảo mật.');
       return true;
     });
   }
@@ -2933,10 +2950,25 @@
     const u = old || { name: '', email: '', password: 'password123', role: 'staff', title: '', deptId: S.depts[0]?.id, managedDeptIds: S.depts[0]?.id ? [S.depts[0].id] : [] };
     const curManaged = old ? userDeptIds(old) : (u.managedDeptIds || []);
 
+    const pwdChanged = old ? isUserPasswordChanged(old) : false;
+    const pwdFieldHtml = old
+      ? field(
+          'Mật khẩu (để trống nếu giữ nguyên)',
+          `<input type="password" name="password" value="" placeholder="${pwdChanged ? '•••••••• (Đã đổi mật khẩu – nhập mới nếu muốn đặt lại)' : '•••••••• (Đang dùng mặc định password123 – nhập mới nếu muốn đổi)'}" autocomplete="new-password">`,
+          true,
+          'Mật khẩu của nhân sự được che bảo mật khi có thay đổi. Để trống nếu không muốn đổi mật khẩu.'
+        )
+      : field(
+          'Mật khẩu khởi tạo *',
+          `<input type="text" name="password" required value="password123" placeholder="Mật khẩu khởi tạo">`,
+          true,
+          'Người dùng có thể tự đổi mật khẩu sau khi đăng nhập (mật khẩu sau khi đổi sẽ được che bảo mật)'
+        );
+
     openModal(old ? '✎ Sửa thông tin tài khoản' : '＋ Cấp tài khoản mới', `
       ${field('Họ và tên *', `<input type="text" name="name" required value="${esc(u.name)}" placeholder="VD: Nguyễn Văn A">`, true)}
       ${field('Email công việc *', `<input type="email" name="email" required value="${esc(u.email)}" placeholder="VD: an.nv@gmo.vn">`, true)}
-      ${field('Mật khẩu khởi tạo *', `<input type="text" name="password" required value="${esc(u.password || 'password123')}" placeholder="Mật khẩu khởi tạo">`, true, 'Người dùng có thể tự đổi mật khẩu sau khi đăng nhập')}
+      ${pwdFieldHtml}
       ${field('Vai trò phân quyền *', `<select name="role">
         ${Object.values(ROLES).map(r => opt(r.id, `${r.badge} (${r.title})`, u.role === r.id)).join('')}
       </select>`)}
@@ -2950,8 +2982,8 @@
       const v = Object.fromEntries(fd);
       const name = String(v.name || '').trim();
       const email = String(v.email || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase();
-      const password = cleanPwdStr(v.password);
-      if (!name || !email || !password) {
+      const rawPwdInput = cleanPwdStr(v.password);
+      if (!name || !email || (!old && !rawPwdInput)) {
         toast('Vui lòng điền đầy đủ Họ tên, Email và Mật khẩu!', true);
         return false;
       }
@@ -2971,8 +3003,12 @@
         return false;
       }
       const { primaryDept, managedDeptIds } = resolveManagedDeptsFromForm(fd, f, v.role === 'admin');
+      const finalPassword = target ? (rawPwdInput || target.password || 'password123') : (rawPwdInput || 'password123');
+      const finalPwdChanged = target
+        ? (rawPwdInput ? (rawPwdInput !== 'password123') : Boolean(target.pwdChanged || isUserPasswordChanged(target)))
+        : (finalPassword !== 'password123');
 
-      const patch = { name, email, password, role: v.role, title: String(v.title || '').trim(), deptId: primaryDept, managedDeptIds };
+      const patch = { name, email, password: finalPassword, pwdChanged: finalPwdChanged, role: v.role, title: String(v.title || '').trim(), deptId: primaryDept, managedDeptIds };
       let acc;
       if (target) {
         Object.assign(target, patch);
@@ -4364,6 +4400,7 @@
         const u = S.users.find(x => x.id === ds.uid);
         if (u && confirm(`Đặt lại mật khẩu cho tài khoản "${u.name}" (${u.email}) về "password123"?`)) {
           u.password = 'password123';
+          u.pwdChanged = false;
           save(); render();
           toast(`Đã đặt lại mật khẩu của ${u.name} về "password123"`);
         }
