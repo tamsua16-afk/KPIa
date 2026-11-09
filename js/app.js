@@ -647,7 +647,10 @@
     return userDeptIds(u).includes(deptId);
   }
 
-  const isMgr = (deptId) => isAdm() || (curUser().role === 'manager' && (!deptId || hasDeptAccess(curUser(), deptId)));
+  const isMgr = (deptId) => {
+    const u = curUser();
+    return isAdm() || ((u.role === 'manager' || u.role === 'leader') && (!deptId || hasDeptAccess(u, deptId)));
+  };
 
   function isSelfEmp(u, e) {
     if (!u || !e) return false;
@@ -683,7 +686,10 @@
   }
 
   function canManageIid() { return isAdm(); }
-  function canManageDept(deptId) { return isAdm() || (curUser().role === 'manager' && Boolean(deptId) && hasDeptAccess(curUser(), deptId)); }
+  function canManageDept(deptId) {
+    const u = curUser();
+    return isAdm() || ((u.role === 'manager' || u.role === 'leader') && Boolean(deptId) && hasDeptAccess(u, deptId));
+  }
   function canManageEmp(empId) {
     const u = curUser();
     if (u.role === 'admin') return true;
@@ -710,7 +716,7 @@
   function canReviewSelf(type, eid) {
     const u = curUser();
     if (u.role === 'admin') return true;
-    if (type === 'dept') return u.role === 'manager' && hasDeptAccess(u, eid);
+    if (type === 'dept') return (u.role === 'manager' || u.role === 'leader') && hasDeptAccess(u, eid);
     const e = empById(eid);
     return isSelfEmp(u, e) || isSubordinateEmp(u, e);
   }
@@ -2231,11 +2237,11 @@
     const u = curUser();
 
     let ents = [];
-    if (u.role === 'staff' || u.role === 'leader') {
+    if (u.role === 'staff') {
       getVisibleEmps().forEach(e => {
         ents.push({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: prevQ ? empScore(e, prevQ.from, prevQ.to) : null });
       });
-    } else if (u.role === 'manager') {
+    } else if (u.role === 'manager' || u.role === 'leader') {
       getVisibleDepts().forEach(d => {
         ents.push({ type: 'dept', id: d.id, name: d.name, sub: 'Trưởng BP: ' + (d.leader || '—'), av: avatar(deptInitials(d), d.color, 34), score: started ? deptScore(d, ...R) : null, prev: prevQ ? deptScore(d, prevQ.from, prevQ.to) : null });
       });
@@ -3956,7 +3962,7 @@
 
   function deptLinksModal(id) {
     if (!canManageDept(id)) {
-      toast('Chỉ Admin hoặc Trưởng bộ phận (Manager) mới được thiết lập liên kết KPI cho Bộ phận!', true);
+      toast('Chỉ Admin, Manager hoặc Leader phụ trách mới được thiết lập liên kết KPI cho Bộ phận!', true);
       return;
     }
     const d = deptById(id); if (!d) return;

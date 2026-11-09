@@ -25,7 +25,7 @@ const ROLES = {
     title: 'Trưởng nhóm / Lead',
     level: 2,
     badge: '🎖️ Leader',
-    desc: 'Quản lý mục tiêu nhóm, cập nhật & rà soát số liệu thực tế của thành viên, review sơ bộ.'
+    desc: 'Thiết lập & chỉnh sửa KPI bộ phận/nhóm phụ trách, cập nhật số liệu thực tế và review thành viên.'
   },
   staff: {
     id: 'staff',
