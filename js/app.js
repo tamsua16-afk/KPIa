@@ -127,7 +127,10 @@
       });
     }
     d.users.forEach(u => {
-      if (u.email && u.email.toLowerCase() === 'ductam@runsystem.net') {
+      u.email = String(u.email || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '').trim();
+      u.name = String(u.name || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+      u.password = String(u.password || '').replace(/[\u200B-\u200D\uFEFF\r\n]/g, '').trim();
+      if (u.email.toLowerCase() === 'ductam@runsystem.net') {
         u.role = 'admin';
         if (!u.password || u.password === 'password123') u.password = 'Tenten2026@1';
       } else {
@@ -166,8 +169,76 @@
     return normalize(typeof buildCleanData === 'function' ? buildCleanData() : buildSampleData());
   }
 
-  function save() {
+  async function pushServer() {
+    try {
+      const res = await fetch('api.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(S)
+      });
+      return res.ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function syncFromServer() {
+    try {
+      const res = await fetch('api.php?_t=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data && valid(data)) {
+        const localUsers = Array.isArray(S?.users) ? S.users : [];
+        const localEmps = Array.isArray(S?.emps) ? S.emps : [];
+        const localDepts = Array.isArray(S?.depts) ? S.depts : [];
+        const curUid = S?.currentUserId;
+        const srv = normalize(data);
+
+        // Nếu trình duyệt hiện tại (ví dụ máy Admin) đã tạo các tài khoản / nhân sự / phòng ban trong localStorage mà trên server chưa có thì tự động gộp và đồng bộ lên server
+        let merged = false;
+        localDepts.forEach(ld => {
+          if (ld.id && !srv.depts.some(sd => sd.id === ld.id)) {
+            srv.depts.push(ld);
+            merged = true;
+          }
+        });
+        localUsers.forEach(lu => {
+          if (lu.email && !srv.users.some(su => (su.email || '').toLowerCase() === lu.email.toLowerCase())) {
+            srv.users.push(lu);
+            merged = true;
+          }
+        });
+        localEmps.forEach(le => {
+          if (le.name && !srv.emps.some(se => se.id === le.id || (se.name || '').toLowerCase() === le.name.toLowerCase())) {
+            srv.emps.push(le);
+            merged = true;
+          }
+        });
+
+        if (isLoggedIn && curUid && srv.users.some(u => u.id === curUid)) {
+          srv.currentUserId = curUid;
+        }
+        S = srv;
+        try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (_) {}
+        if (merged) {
+          await pushServer();
+        }
+        computeRollups();
+        updateBadge();
+        updateUserWidget();
+        if (isLoggedIn) render();
+        return true;
+      } else if (data && data.empty) {
+        await pushServer();
+        return true;
+      }
+    } catch (_) { /* ignore when offline or file:// */ }
+    return false;
+  }
+
+  function save(syncRemote = true) {
     try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (e) { toast('Không lưu được dữ liệu vào trình duyệt', true); }
+    if (syncRemote) pushServer();
     updateBadge();
     updateUserWidget();
   }
@@ -1880,7 +1951,7 @@
         <td><span class="role-pill ${r.id}">${r.badge}</span></td>
         <td>${esc(u.title || '—')}</td>
         <td>${d ? `<span class="tag dept">${esc(d.name)}</span>` : '<span class="muted small">Toàn Khối (Khối IID)</span>'}</td>
-        <td><span class="tag">••••••••</span></td>
+        <td><code>${esc(u.id === 'u_admin' ? '••••••••' : (u.password || 'password123'))}</code></td>
         <td class="num" style="white-space:nowrap">
           ${!isCur ? `<button class="btn sm" data-action="admin-join-user" data-uid="${u.id}" title="Đăng nhập ngay dưới góc nhìn của tài khoản này">🚀 Join / Xem góc nhìn</button>` : '<span class="tag good" style="font-weight:700">✓ Đang dùng</span>'}
           <button class="btn ghost sm" title="Đặt lại mật khẩu về password123" data-action="admin-reset-pwd" data-uid="${u.id}">Reset MK</button>
@@ -1913,6 +1984,7 @@
       <div class="card-head" style="flex-wrap:wrap;gap:8px">
         <h2>Danh sách tài khoản cấp Email & Mật khẩu</h2>
         <span class="spacer"></span>
+        <button class="btn sm ghost" data-action="sync-server" title="Đồng bộ tài khoản & dữ liệu KPI lên Server">🔄 Đồng bộ Server</button>
         <button class="btn sm ghost" data-action="download-user-template">📋 Tải mẫu CSV</button>
         <button class="btn sm" data-action="import-users-modal">📥 Import nhân sự</button>
         <span class="tag" style="margin-left:4px">${S.users.length} tài khoản</span>
@@ -2057,6 +2129,18 @@
   }
 
   /* ---------- Màn hình Đăng nhập ---------- */
+  function setLoginError(msg = '') {
+    const errEl = $('#login-error');
+    if (!errEl) return;
+    if (!msg) {
+      errEl.hidden = true;
+      errEl.textContent = '';
+    } else {
+      errEl.hidden = false;
+      errEl.textContent = msg;
+    }
+  }
+
   function showLoginOverlay() {
     const overlay = $('#login-overlay');
     if (!overlay) return;
@@ -2073,6 +2157,7 @@
       closeBtn.hidden = !isLoggedIn;
     }
 
+    setLoginError('');
     const emailInp = $('#login-email');
     const pwdInp = $('#login-password');
     if (emailInp) emailInp.value = '';
@@ -2093,14 +2178,48 @@
     }
   }
 
-  function handleLogin(email, password) {
-    const trimmedEmail = String(email || '').trim().toLowerCase();
-    const u = S.users.find(x => x.email.toLowerCase() === trimmedEmail);
+  function findUserByEmailInput(rawEmail) {
+    if (!rawEmail) return null;
+    const clean = rawEmail.replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase();
+    let u = S.users.find(x => String(x.email || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase() === clean);
+    if (!u && !clean.includes('@')) {
+      const matches = S.users.filter(x => String(x.email || '').toLowerCase().split('@')[0] === clean);
+      if (matches.length === 1) u = matches[0];
+    }
+    return u || null;
+  }
+
+  async function handleLogin(email, password) {
+    setLoginError('');
+    const cleanEmail = String(email || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase();
+    const cleanPwd = String(password || '').replace(/[\u200B-\u200D\uFEFF\r\n]/g, '').trim();
+
+    if (!cleanEmail || !cleanPwd) {
+      const msg = '⚠️ Vui lòng nhập đầy đủ Email công việc và Mật khẩu!';
+      setLoginError(msg);
+      toast(msg, true);
+      return false;
+    }
+
+    let u = findUserByEmailInput(cleanEmail);
+    let storedPwd = u ? String(u.password || '').replace(/[\u200B-\u200D\uFEFF\r\n]/g, '').trim() : '';
+
+    // Nếu không tìm thấy tài khoản hoặc mật khẩu chưa khớp ở bộ nhớ cục bộ, tự động đồng bộ danh sách tài khoản mới nhất từ Server về
+    if (!u || storedPwd !== cleanPwd) {
+      await syncFromServer();
+      u = findUserByEmailInput(cleanEmail);
+      storedPwd = u ? String(u.password || '').replace(/[\u200B-\u200D\uFEFF\r\n]/g, '').trim() : '';
+    }
+
     if (!u) {
+      const msg = `❌ Email "${String(email || '').trim()}" không tồn tại trong hệ thống! Hãy kiểm tra lại chính tả hoặc liên hệ Admin.`;
+      setLoginError(msg);
       toast('Email không tồn tại trong hệ thống!', true);
       return false;
     }
-    if (u.password !== password) {
+    if (storedPwd !== cleanPwd) {
+      const msg = '❌ Mật khẩu không chính xác! Vui lòng kiểm tra lại (chữ hoa/thường hoặc khoảng trắng thừa).';
+      setLoginError(msg);
       toast('Mật khẩu không chính xác! Vui lòng thử lại.', true);
       return false;
     }
@@ -2112,6 +2231,7 @@
       pwdInp.value = '';
       pwdInp.type = 'password';
     }
+    setLoginError('');
 
     try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
     isLoggedIn = true;
@@ -2266,6 +2386,7 @@
             <td>${esc(item.title || '—')}</td>
             <td>${dObj ? `<span class="tag dept">${esc(dObj.name)}</span>` : (item.deptId ? esc(item.deptId) : '<span class="muted small">Toàn Khối</span>')}</td>
             <td><span class="role-pill ${rObj.id}">${rObj.badge}</span></td>
+            <td><code>${esc(item.password || 'password123')}</code></td>
             <td>${badge}</td>
           </tr>`;
         }).join('');
@@ -2273,9 +2394,15 @@
       if (btnSave) btnSave.disabled = !parsedList.some(x => x.status !== 'err');
     }
 
+    function isKnownRoleToken(val) {
+      const s = String(val || '').trim().toLowerCase();
+      if (!s) return false;
+      return ['admin', 'manager', 'mgr', 'leader', 'lead', 'staff', 'nhân viên', 'nhan vien', 'chuyên viên', 'chuyen vien', 'trưởng phòng', 'truong phong', 'trưởng bộ phận', 'trưởng nhóm', 'truong nhom', 'giám đốc', 'giam doc'].some(k => s === k || s.includes(k));
+    }
+
     function parseInputText(text) {
       if (!text || !text.trim()) { parsedList = []; return; }
-      text = text.trim();
+      text = text.replace(/^\uFEFF/, '').trim();
 
       if (text.startsWith('[') && text.endsWith(']')) {
         try {
@@ -2287,7 +2414,7 @@
         } catch (_) {}
       }
 
-      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+      const lines = text.split(/\r?\n/).map(l => l.replace(/[\u200B-\u200D\uFEFF]/g, '').trim()).filter(l => l && !l.startsWith('#'));
       if (!lines.length) { parsedList = []; return; }
 
       const first = lines[0];
@@ -2309,27 +2436,71 @@
       };
 
       const rows = lines.map(parseLine);
-      const h0 = (rows[0][0] || '').toLowerCase(), h1 = (rows[0][1] || '').toLowerCase();
-      const isHeader = h0.includes('tên') || h0.includes('name') || h1.includes('email') || h1.includes('mail');
+      const headerRow = rows[0].map(c => (c || '').toLowerCase());
+      const isHeader = headerRow.some(h => h.includes('tên') || h.includes('name') || h.includes('email') || h.includes('mail') || h.includes('mật khẩu') || h.includes('password'));
       const dataRows = isHeader ? rows.slice(1) : rows;
 
-      parsedList = dataRows.map(r => mapUserRow({
-        name: r[0] || '',
-        email: r[1] || '',
-        title: r[2] || '',
-        dept: r[3] || '',
-        role: r[4] || 'staff',
-        password: r[5] || 'password123'
-      })).filter(r => r.name || r.email);
+      // Tự động nhận diện vị trí cột theo tiêu đề (nếu có)
+      let colMap = null;
+      if (isHeader) {
+        const findCol = (...keys) => headerRow.findIndex(h => keys.some(k => h.includes(k)));
+        const cName = findCol('họ và tên', 'họ tên', 'tên', 'name', 'nhân sự', 'nhân viên');
+        const cEmail = findCol('email', 'mail', 'tài khoản');
+        const cTitle = findCol('chức danh', 'chức vụ', 'vị trí', 'title', 'position');
+        const cDept = findCol('phòng ban', 'bộ phận', 'phòng', 'đơn vị', 'dept', 'department');
+        const cRole = findCol('vai trò', 'phân quyền', 'quyền', 'role');
+        const cPwd = findCol('mật khẩu', 'mat khau', 'password', 'pass', 'mk');
+        if (cName >= 0 || cEmail >= 0) {
+          colMap = { cName, cEmail, cTitle, cDept, cRole, cPwd };
+        }
+      }
+
+      parsedList = dataRows.map(rawRow => {
+        if (!rawRow || !rawRow.some(c => c && c.trim())) return null;
+        let r = rawRow.slice();
+
+        if (colMap && colMap.cEmail >= 0) {
+          return mapUserRow({
+            name: colMap.cName >= 0 ? r[colMap.cName] : r[0],
+            email: r[colMap.cEmail],
+            title: colMap.cTitle >= 0 ? r[colMap.cTitle] : '',
+            dept: colMap.cDept >= 0 ? r[colMap.cDept] : '',
+            role: colMap.cRole >= 0 ? r[colMap.cRole] : 'staff',
+            password: colMap.cPwd >= 0 ? r[colMap.cPwd] : 'password123'
+          });
+        }
+
+        // Nếu cột đầu tiên là số thứ tự (STT: 1, 2, 3...) và cột thứ 3 chứa '@' thì tự động bỏ cột STT
+        if (/^\d+$/.test(r[0] || '') && (r[2] || '').includes('@')) {
+          r = r.slice(1);
+        }
+
+        let roleVal = r[4] || 'staff';
+        let pwdVal = r[5] || '';
+        // Nếu người dùng chỉ nhập 5 cột (cột thứ 5 không phải là Vai trò mà là Mật khẩu)
+        if (!pwdVal && r[4] && !isKnownRoleToken(r[4])) {
+          pwdVal = r[4];
+          roleVal = 'staff';
+        }
+
+        return mapUserRow({
+          name: r[0] || '',
+          email: r[1] || '',
+          title: r[2] || '',
+          dept: r[3] || '',
+          role: roleVal,
+          password: pwdVal || 'password123'
+        });
+      }).filter(r => r && (r.name || r.email));
     }
 
     function mapUserRow(r) {
-      const name = (r.name || '').trim();
-      const email = (r.email || '').trim().toLowerCase();
-      const title = (r.title || '').trim();
-      const deptRaw = (r.dept || r.department || r.deptId || '').trim();
-      const roleRaw = (r.role || 'staff').trim().toLowerCase();
-      const password = (r.password || 'password123').trim();
+      const name = String(r.name || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+      const email = String(r.email || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase();
+      const title = String(r.title || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+      const deptRaw = String(r.dept || r.department || r.deptId || '').trim();
+      const roleRaw = String(r.role || 'staff').trim().toLowerCase();
+      const password = String(r.password || 'password123').replace(/[\u200B-\u200D\uFEFF\r\n]/g, '').trim() || 'password123';
 
       let deptId = null;
       if (deptRaw) {
@@ -2400,6 +2571,7 @@
                 <th>Chức danh</th>
                 <th>Phòng ban</th>
                 <th>Vai trò</th>
+                <th>Mật khẩu</th>
                 <th>Trạng thái</th>
               </tr>
             </thead>
@@ -3391,6 +3563,13 @@
       case 'edit-user': userModal(ds.uid); break;
       case 'import-users-modal': importUsersModal(); break;
       case 'download-user-template': downloadUserTemplate(); break;
+      case 'sync-server': {
+        pushServer().then(ok => {
+          if (ok) toast(`✅ Đã đồng bộ ${S.users.length} tài khoản & dữ liệu KPI lên Server!`);
+          else toast('⚠️ Không thể kết nối api.php trên Server', true);
+        });
+        break;
+      }
       case 'del-user': {
         if (!isAdm()) break;
         const u = S.users.find(x => x.id === ds.uid);
@@ -3517,6 +3696,8 @@
     const pwd = $('#login-password')?.value;
     handleLogin(email, pwd);
   });
+  $('#login-email')?.addEventListener('input', () => setLoginError(''));
+  $('#login-password')?.addEventListener('input', () => setLoginError(''));
 
   // Toggle password visibility
   $('#btn-toggle-pwd')?.addEventListener('click', () => {
@@ -3552,9 +3733,10 @@
   /* ---------- Init ---------- */
   fillMonthSelect();
   computeRollups();
-  save();
+  save(false);
   const h = location.hash.slice(1);
   UI.view = RENDER[h] ? h : 'dashboard';
   render(true);
   showLoginOverlay();
+  syncFromServer();
 })();
