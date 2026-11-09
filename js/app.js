@@ -181,15 +181,14 @@
     return normalize(typeof buildCleanData === 'function' ? buildCleanData() : buildSampleData());
   }
 
-  /* ---------- Đồng bộ dữ liệu Đa thiết bị (api.php + Cloud Sync dự phòng tự động khi Hosting không chạy PHP) ----------
-     - Tự động thử api.php trên máy chủ trước.
-     - Nếu Hosting là Static / Plesk chưa bật PHP (api.php trả về mã nguồn <?php hoặc 404/405),
-       hệ thống tự động chuyển sang Cloud Sync (HTTPS CORS + nén Gzip phân mảnh + bộ nhớ đệm nhanh)
-       để toàn bộ 61+ tài khoản nhân sự & KPI vẫn đồng bộ xuyên suốt giữa mọi máy tính mà không cần cấu hình PHP. */
+  /* ---------- Đồng bộ dữ liệu Đa thiết bị (api.php + Cloud Sync tức thời + Static Store dự phòng) ----------
+     - Cơ chế 1 chiều rõ ràng:
+       + save(true) khi đã đăng nhập hoặc bấm "Đồng bộ Server" → Đẩy dữ liệu mới nhất lên Server/Cloud (0.5 giây).
+       + syncFromServer() → Chỉ tải dữ liệu mới hơn từ Server/Cloud về máy (TUYỆT ĐỐI không đẩy ngược dữ liệu cũ từ máy khác đè lên Server). */
   const SYNC = { ok: null, lastError: '', warned: false, pushing: null, pending: false, phpDisabled: false };
   const CLOUD_KV_BASE = 'https://keyvalue.immanuel.co/api/KeyVal';
-  const CLOUD_APP_KEY = 'tenten_kpi27_iid_prod_v2';
-  const CLOUD_NTFY_TOPIC = 'tenten_kpi2027_iid_blob_v2';
+  const CLOUD_APP_KEY = 'tenten_kpi27_iid_prod_v3';
+  const CLOUD_NTFY_TOPIC = 'tenten_kpi2027_iid_blob_v3';
 
   function apiUrl(qs = '') {
     return 'api.php' + (qs ? '?' + qs : '');
@@ -224,58 +223,91 @@
     return new TextDecoder().decode(buf);
   }
 
-  async function cloudPush(rawJson, updatedAt) {
-    let ntfyId = 'none';
+  async function pushBackupChunks(rawJson) {
     try {
-      const nr = await fetch(`https://ntfy.sh/${CLOUD_NTFY_TOPIC}`, {
-        method: 'PUT',
-        headers: { 'Filename': 'kpi_store.json' },
-        body: rawJson
-      });
-      if (nr.ok) {
-        const nj = await nr.json();
-        if (nj?.id) ntfyId = nj.id;
-      }
-    } catch (_) {}
-
-    let chunkCount = 0;
-    const gz = await gzEncodeB64Url(rawJson);
-    if (gz) {
+      const gz = await gzEncodeB64Url(rawJson);
+      if (!gz) return 0;
       const size = 190;
       const chunks = [];
       for (let i = 0; i < gz.length; i += size) chunks.push(gz.slice(i, i + size));
-      chunkCount = chunks.length;
-      const batchSize = 8;
+      const batchSize = 10;
       for (let b = 0; b < chunks.length; b += batchSize) {
         const slice = chunks.slice(b, b + batchSize);
-        const resArr = await Promise.all(slice.map((c, idx) =>
-          fetch(`${CLOUD_KV_BASE}/UpdateValue/${CLOUD_APP_KEY}/c${b + idx}/${c}`, { method: 'POST' })
+        await Promise.all(slice.map((c, idx) =>
+          fetch(`${CLOUD_KV_BASE}/UpdateValue/${CLOUD_APP_KEY}/c${b + idx}/${c}`, { method: 'POST' }).catch(() => null)
         ));
-        if (!resArr.every(r => r.ok)) throw new Error('Không ghi được mảnh dữ liệu lên Cloud');
       }
-    } else if (ntfyId === 'none') {
-      throw new Error('Trình duyệt không hỗ trợ nén dữ liệu Cloud');
+      return chunks.length;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  async function cloudPush(rawJson, updatedAt) {
+    const ts = updatedAt || Date.now();
+    let ntfyId = 'none';
+    const nr = await fetch(`https://ntfy.sh/${CLOUD_NTFY_TOPIC}`, {
+      method: 'PUT',
+      headers: { 'Filename': 'kpi_store.json' },
+      body: rawJson
+    });
+    if (nr.ok) {
+      const nj = await nr.json();
+      if (nj?.id) ntfyId = nj.id;
+    }
+    if (ntfyId === 'none') {
+      throw new Error('Không tải được gói đồng bộ lên Cloud');
     }
 
-    const metaVal = `v2_${updatedAt || Date.now()}_${chunkCount}_${ntfyId}`;
-    const mr = await fetch(`${CLOUD_KV_BASE}/UpdateValue/${CLOUD_APP_KEY}/meta/${metaVal}`, { method: 'POST' });
-    if (!mr.ok) throw new Error(`HTTP ${mr.status} khi lưu thông tin đồng bộ`);
+    // Cập nhật ngay con trỏ meta (chỉ mất ~0.5 giây với 2 request duy nhất) để các máy khác nhận tức thì
+    const fastMeta = `v3_${ts}_0_${ntfyId}`;
+    const mr = await fetch(`${CLOUD_KV_BASE}/UpdateValue/${CLOUD_APP_KEY}/meta/${fastMeta}`, { method: 'POST' });
+    if (!mr.ok) throw new Error(`HTTP ${mr.status} khi cập nhật con trỏ đồng bộ`);
+
+    // Chạy nền lưu thêm các mảnh nén dự phòng dài hạn (không chặn thao tác của người dùng)
+    pushBackupChunks(rawJson).then(cnt => {
+      if (cnt > 0 && S.updatedAt === ts) {
+        fetch(`${CLOUD_KV_BASE}/UpdateValue/${CLOUD_APP_KEY}/meta/v3_${ts}_${cnt}_${ntfyId}`, { method: 'POST' }).catch(() => {});
+      }
+    });
+
     return { ok: true };
   }
 
   async function cloudPullMeta() {
-    const r = await fetch(`${CLOUD_KV_BASE}/GetValue/${CLOUD_APP_KEY}/meta?_t=${Date.now()}`, { cache: 'no-store' });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const raw = (await r.json()) || '';
-    if (!raw || !String(raw).startsWith('v2_')) return { empty: true };
-    const [, tsStr, cntStr, ntfyId] = String(raw).split('_');
-    return { empty: false, updatedAt: +tsStr || 0, chunkCount: +cntStr || 0, ntfyId: ntfyId || 'none' };
+    try {
+      const r = await fetch(`${CLOUD_KV_BASE}/GetValue/${CLOUD_APP_KEY}/meta?_t=${Date.now()}`, { cache: 'no-store' });
+      if (r.ok) {
+        const raw = (await r.json()) || '';
+        if (raw && String(raw).startsWith('v3_')) {
+          const [, tsStr, cntStr, ntfyId] = String(raw).split('_');
+          return { empty: false, updatedAt: +tsStr || 0, chunkCount: +cntStr || 0, ntfyId: ntfyId || 'none' };
+        }
+      }
+    } catch (_) {}
+
+    // Dự phòng: đọc trực tiếp bản ghi mới nhất từ luồng ntfy nếu keyvalue bị chậm
+    try {
+      const r2 = await fetch(`https://ntfy.sh/${CLOUD_NTFY_TOPIC}/json?poll=1&since=all&_t=${Date.now()}`, { cache: 'no-store' });
+      if (r2.ok) {
+        const txt = (await r2.text()).trim();
+        if (txt) {
+          const lines = txt.split('\n').filter(Boolean).map(l => JSON.parse(l));
+          const last = lines.reverse().find(m => m.attachment?.url || m.id);
+          if (last) {
+            return { empty: false, updatedAt: (last.time || 0) * 1000, chunkCount: 0, ntfyId: last.id };
+          }
+        }
+      }
+    } catch (_) {}
+
+    return { empty: true };
   }
 
   async function cloudPullData(meta) {
     if (meta.ntfyId && meta.ntfyId !== 'none') {
       try {
-        const r = await fetch(`https://ntfy.sh/file/${meta.ntfyId}.json`, { cache: 'no-store' });
+        const r = await fetch(`https://ntfy.sh/file/${meta.ntfyId}.json?_t=${meta.updatedAt || Date.now()}`, { cache: 'no-store' });
         if (r.ok) {
           const d = await r.json();
           if (valid(d)) return d;
@@ -283,22 +315,30 @@
       } catch (_) {}
     }
     if (meta.chunkCount > 0) {
-      const chunks = new Array(meta.chunkCount);
-      const batchSize = 8;
-      for (let b = 0; b < meta.chunkCount; b += batchSize) {
-        const end = Math.min(b + batchSize, meta.chunkCount);
-        const idxs = [];
-        for (let i = b; i < end; i++) idxs.push(i);
-        const vals = await Promise.all(idxs.map(i =>
-          fetch(`${CLOUD_KV_BASE}/GetValue/${CLOUD_APP_KEY}/c${i}?_t=${meta.updatedAt}`, { cache: 'no-store' }).then(r => r.json())
-        ));
-        vals.forEach((v, k) => { chunks[b + k] = v || ''; });
-      }
-      const jsonStr = await gzDecodeB64Url(chunks.join(''));
-      if (jsonStr) {
-        const d = JSON.parse(jsonStr);
-        if (valid(d)) return d;
-      }
+      try {
+        const chunks = new Array(meta.chunkCount);
+        const batchSize = 10;
+        for (let b = 0; b < meta.chunkCount; b += batchSize) {
+          const end = Math.min(b + batchSize, meta.chunkCount);
+          const idxs = [];
+          for (let i = b; i < end; i++) idxs.push(i);
+          const vals = await Promise.all(idxs.map(i =>
+            fetch(`${CLOUD_KV_BASE}/GetValue/${CLOUD_APP_KEY}/c${i}?_t=${meta.updatedAt}`, { cache: 'no-store' }).then(r => r.json())
+          ));
+          vals.forEach((v, k) => { chunks[b + k] = v || ''; });
+        }
+        const jsonStr = await gzDecodeB64Url(chunks.join(''));
+        if (jsonStr) {
+          const d = JSON.parse(jsonStr);
+          if (valid(d)) return d;
+        }
+      } catch (_) {}
+    }
+    // Dự phòng cuối: tải từ file data/default_store.json đi kèm trên Hosting
+    const rf = await fetch(`data/default_store.json?_t=${Date.now()}`, { cache: 'no-store' });
+    if (rf.ok) {
+      const df = await rf.json();
+      if (valid(df)) return df;
     }
     throw new Error('Không tải được dữ liệu đồng bộ từ Cloud');
   }
@@ -309,11 +349,7 @@
       return JSON.parse(text);
     } catch (_) {
       const snippet = text.trim().slice(0, 60);
-      if (snippet.startsWith('<?php')) {
-        SYNC.phpDisabled = true;
-        throw new Error('PHP_DISABLED');
-      }
-      if (snippet.toLowerCase().startsWith('<!doctype') || snippet.startsWith('<html')) {
+      if (snippet.startsWith('<?php') || snippet.toLowerCase().startsWith('<!doctype') || snippet.startsWith('<html')) {
         SYNC.phpDisabled = true;
         throw new Error('PHP_DISABLED');
       }
@@ -391,45 +427,7 @@
     return Boolean(a && a.classList?.contains('cell-input'));
   }
 
-  function hasLocalCustomData(state) {
-    return Boolean(state && ((state.users?.length || 0) > 1 || (state.emps?.length || 0) > 0 || +state.updatedAt > 0 || (state.users || []).some(u => u.deptId)));
-  }
-
-  // Gộp tài khoản / nhân sự / bộ phận chỉ có ở máy cục bộ (dữ liệu từ phiên bản cũ chưa từng đẩy lên server)
-  function mergeLegacyLocal(srv, local) {
-    let merged = false;
-    const localHasWork = hasLocalCustomData(local);
-    (local.depts || []).forEach(ld => {
-      if (ld.id && !srv.depts.some(sd => sd.id === ld.id)) { srv.depts.push(ld); merged = true; }
-    });
-    (local.emps || []).forEach(le => {
-      const se = srv.emps.find(x => x.id === le.id || (le.name && String(x.name || '').toLowerCase() === String(le.name).toLowerCase()));
-      if (!se && le.id) {
-        srv.emps.push(le);
-        merged = true;
-      } else if (se && localHasWork && le.deptId && se.deptId !== le.deptId) {
-        se.deptId = le.deptId;
-        merged = true;
-      }
-    });
-    (local.users || []).forEach(lu => {
-      const em = String(lu.email || '').toLowerCase();
-      if (!em) return;
-      const su = srv.users.find(x => String(x.email || '').toLowerCase() === em);
-      if (!su) {
-        srv.users.push(lu);
-        merged = true;
-      } else if (localHasWork) {
-        if (lu.deptId !== undefined && su.deptId !== lu.deptId) { su.deptId = lu.deptId; merged = true; }
-        if (lu.role && su.role !== lu.role) { su.role = lu.role; merged = true; }
-        if (lu.title && su.title !== lu.title) { su.title = lu.title; merged = true; }
-        if (lu.password && su.password !== lu.password) { su.password = lu.password; merged = true; }
-      }
-    });
-    return merged;
-  }
-
-  async function fetchRemoteState(localTs) {
+  async function fetchRemoteState(localTs, force = false) {
     if (!SYNC.phpDisabled) {
       try {
         const res = await fetch(apiUrl('_t=' + Date.now()), { cache: 'no-store' });
@@ -443,49 +441,47 @@
       }
     }
     const meta = await cloudPullMeta();
-    if (meta.empty) return { source: 'cloud', empty: true, updatedAt: 0, data: null };
-    if (localTs > 0 && localTs >= meta.updatedAt) {
+    if (meta.empty) {
+      try {
+        const rf = await fetch(`data/default_store.json?_t=${Date.now()}`, { cache: 'no-store' });
+        if (rf.ok) {
+          const df = await rf.json();
+          if (valid(df)) return { source: 'static', empty: false, updatedAt: +df.updatedAt || 1, data: df };
+        }
+      } catch (_) {}
+      return { source: 'cloud', empty: true, updatedAt: 0, data: null };
+    }
+    if (!force && localTs > 0 && localTs >= meta.updatedAt) {
       return { source: 'cloud', empty: false, updatedAt: meta.updatedAt, data: null };
     }
     const data = await cloudPullData(meta);
     return { source: 'cloud', empty: false, updatedAt: +data.updatedAt || meta.updatedAt || 0, data };
   }
 
+  // Chỉ tải dữ liệu mới từ Server/Cloud về máy (READ-ONLY) – không bao giờ đẩy ngược dữ liệu cũ lên Server
   async function syncFromServer({ force = false } = {}) {
     try {
+      if (SYNC.pushing) return true; // Đang đẩy dữ liệu mới lên thì không kéo bản cũ về đè
       const localTs = +S.updatedAt || 0;
-      const remote = await fetchRemoteState(localTs);
+      const remote = await fetchRemoteState(localTs, force);
       SYNC.ok = true;
 
-      if (remote.empty) {
-        if (hasLocalCustomData(S) || (isLoggedIn && isAdm())) {
-          const r = await pushServer();
-          return r.ok;
-        }
-        return true;
-      }
+      if (remote.empty) return true;
 
       const srvTs = remote.updatedAt;
-      if (localTs > srvTs || (hasLocalCustomData(S) && (S.users?.length || 0) > (remote.data?.users?.length || 0) && localTs === 0)) {
-        await pushServer();
-        return true;
-      }
-      if (localTs === srvTs && srvTs > 0) return true;
+      if (!force && localTs > 0 && localTs >= srvTs) return true;
+      if (force && localTs > srvTs) return true;
       if (!remote.data || !valid(remote.data)) return true;
       if (!force && isUserEditing()) return true;
 
       const curUid = S.currentUserId;
-      const local = S;
       const srv = normalize(remote.data);
-      const merged = mergeLegacyLocal(srv, local);
 
       if (isLoggedIn && curUid && srv.users.some(u => u.id === curUid)) {
         srv.currentUserId = curUid;
       }
       S = srv;
-      if (merged) S.updatedAt = Date.now();
       try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (_) {}
-      if (merged) await pushServer();
       computeRollups();
       updateBadge();
       updateUserWidget();
@@ -502,7 +498,7 @@
   function save(syncRemote = true) {
     if (syncRemote) S.updatedAt = Date.now();
     try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (e) { toast('Không lưu được dữ liệu vào trình duyệt', true); }
-    if (syncRemote) pushServer();
+    if (syncRemote && isLoggedIn) pushServer();
     updateBadge();
     updateUserWidget();
   }
@@ -3945,8 +3941,12 @@
         }
         if (confirm(`Bạn có chắc muốn xóa tài khoản "${u.name}" (${u.email})?`)) {
           S.users = S.users.filter(x => x.id !== u.id);
+          if (u.empId) {
+            S.emps = S.emps.filter(e => e.id !== u.empId);
+            Object.keys(S.reviews).forEach(k => { if (k.startsWith(`emp_${u.empId}_`)) delete S.reviews[k]; });
+          }
           save(); render();
-          toast(`Đã xóa tài khoản ${u.name}`);
+          toast(`Đã xóa tài khoản & hồ sơ nhân sự ${u.name}`);
         }
         break;
       }
@@ -4005,10 +4005,11 @@
       case 'edit-emp': empModal(ds.eid); break;
       case 'del-emp': {
         const e = empById(ds.eid); if (!e) break;
-        if (!confirm(`Xóa nhân sự "${e.name}"?`)) break;
+        if (!confirm(`Xóa nhân sự "${e.name}" (cùng tài khoản liên kết)?`)) break;
         S.emps = S.emps.filter(x => x !== e);
+        S.users = S.users.filter(u => u.id === 'u_admin' || u.role === 'admin' || u.empId !== e.id);
         Object.keys(S.reviews).forEach(k => { if (k.startsWith(`emp_${e.id}_`)) delete S.reviews[k]; });
-        UI.selEmp = null; save(); render(); toast('Đã xóa nhân sự');
+        UI.selEmp = null; save(); render(); toast('Đã xóa nhân sự & tài khoản liên kết');
         break;
       }
       case 'sel-emp': UI.selEmp = ds.eid; render(); break;

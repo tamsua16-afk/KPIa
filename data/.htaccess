@@ -1,7 +1,5 @@
-<IfModule mod_authz_core.c>
-  Require all denied
-</IfModule>
-<IfModule !mod_authz_core.c>
-  Order deny,allow
-  Deny from all
+<IfModule mod_headers.c>
+  <FilesMatch "\.(json)$">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+  </FilesMatch>
 </IfModule>

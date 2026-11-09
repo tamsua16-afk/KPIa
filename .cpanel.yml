@@ -9,6 +9,7 @@ deployment:
     - /bin/cp -f api.php $DEPLOYPATH
     - /bin/cp -f .htaccess $DEPLOYPATH
     - /bin/cp -f data/.htaccess $DEPLOYPATH/data/
+    - /bin/cp -f data/default_store.json $DEPLOYPATH/data/
     - /bin/cp -Rf css $DEPLOYPATH
     - /bin/cp -Rf js $DEPLOYPATH
     - /bin/cp -Rf assets $DEPLOYPATH

@@ -24,5 +24,5 @@ package.json
 package-lock.json
 tests/
 worker/
-data/*.json
+data/kpi_store.json
 kpi_store.json
