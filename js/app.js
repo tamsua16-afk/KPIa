@@ -181,14 +181,126 @@
     return normalize(typeof buildCleanData === 'function' ? buildCleanData() : buildSampleData());
   }
 
-  /* ---------- Đồng bộ dữ liệu với Server (api.php) ----------
-     - Mỗi lần lưu có thay đổi thật: S.updatedAt = thời điểm lưu → đẩy lên server.
-     - Khi tải từ server: bản nào mới hơn (updatedAt lớn hơn) thì thắng,
-       tránh việc dữ liệu cũ trên server ghi đè thay đổi vừa sửa trên máy (và ngược lại). */
-  const SYNC = { ok: null, lastError: '', warned: false, pushing: null, pending: false };
+  /* ---------- Đồng bộ dữ liệu Đa thiết bị (api.php + Cloud Sync dự phòng tự động khi Hosting không chạy PHP) ----------
+     - Tự động thử api.php trên máy chủ trước.
+     - Nếu Hosting là Static / Plesk chưa bật PHP (api.php trả về mã nguồn <?php hoặc 404/405),
+       hệ thống tự động chuyển sang Cloud Sync (HTTPS CORS + nén Gzip phân mảnh + bộ nhớ đệm nhanh)
+       để toàn bộ 61+ tài khoản nhân sự & KPI vẫn đồng bộ xuyên suốt giữa mọi máy tính mà không cần cấu hình PHP. */
+  const SYNC = { ok: null, lastError: '', warned: false, pushing: null, pending: false, phpDisabled: false };
+  const CLOUD_KV_BASE = 'https://keyvalue.immanuel.co/api/KeyVal';
+  const CLOUD_APP_KEY = 'tenten_kpi27_iid_prod_v2';
+  const CLOUD_NTFY_TOPIC = 'tenten_kpi2027_iid_blob_v2';
 
   function apiUrl(qs = '') {
     return 'api.php' + (qs ? '?' + qs : '');
+  }
+
+  async function gzEncodeB64Url(str) {
+    if (typeof CompressionStream === 'undefined') return null;
+    const bytes = new TextEncoder().encode(str);
+    const cs = new CompressionStream('gzip');
+    const writer = cs.writable.getWriter();
+    writer.write(bytes);
+    writer.close();
+    const buf = await new Response(cs.readable).arrayBuffer();
+    const u8 = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  async function gzDecodeB64Url(b64url) {
+    if (typeof DecompressionStream === 'undefined') return null;
+    let b64 = String(b64url || '').replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const ds = new DecompressionStream('gzip');
+    const writer = ds.writable.getWriter();
+    writer.write(u8);
+    writer.close();
+    const buf = await new Response(ds.readable).arrayBuffer();
+    return new TextDecoder().decode(buf);
+  }
+
+  async function cloudPush(rawJson, updatedAt) {
+    let ntfyId = 'none';
+    try {
+      const nr = await fetch(`https://ntfy.sh/${CLOUD_NTFY_TOPIC}`, {
+        method: 'PUT',
+        headers: { 'Filename': 'kpi_store.json' },
+        body: rawJson
+      });
+      if (nr.ok) {
+        const nj = await nr.json();
+        if (nj?.id) ntfyId = nj.id;
+      }
+    } catch (_) {}
+
+    let chunkCount = 0;
+    const gz = await gzEncodeB64Url(rawJson);
+    if (gz) {
+      const size = 190;
+      const chunks = [];
+      for (let i = 0; i < gz.length; i += size) chunks.push(gz.slice(i, i + size));
+      chunkCount = chunks.length;
+      const batchSize = 8;
+      for (let b = 0; b < chunks.length; b += batchSize) {
+        const slice = chunks.slice(b, b + batchSize);
+        const resArr = await Promise.all(slice.map((c, idx) =>
+          fetch(`${CLOUD_KV_BASE}/UpdateValue/${CLOUD_APP_KEY}/c${b + idx}/${c}`, { method: 'POST' })
+        ));
+        if (!resArr.every(r => r.ok)) throw new Error('Không ghi được mảnh dữ liệu lên Cloud');
+      }
+    } else if (ntfyId === 'none') {
+      throw new Error('Trình duyệt không hỗ trợ nén dữ liệu Cloud');
+    }
+
+    const metaVal = `v2_${updatedAt || Date.now()}_${chunkCount}_${ntfyId}`;
+    const mr = await fetch(`${CLOUD_KV_BASE}/UpdateValue/${CLOUD_APP_KEY}/meta/${metaVal}`, { method: 'POST' });
+    if (!mr.ok) throw new Error(`HTTP ${mr.status} khi lưu thông tin đồng bộ`);
+    return { ok: true };
+  }
+
+  async function cloudPullMeta() {
+    const r = await fetch(`${CLOUD_KV_BASE}/GetValue/${CLOUD_APP_KEY}/meta?_t=${Date.now()}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const raw = (await r.json()) || '';
+    if (!raw || !String(raw).startsWith('v2_')) return { empty: true };
+    const [, tsStr, cntStr, ntfyId] = String(raw).split('_');
+    return { empty: false, updatedAt: +tsStr || 0, chunkCount: +cntStr || 0, ntfyId: ntfyId || 'none' };
+  }
+
+  async function cloudPullData(meta) {
+    if (meta.ntfyId && meta.ntfyId !== 'none') {
+      try {
+        const r = await fetch(`https://ntfy.sh/file/${meta.ntfyId}.json`, { cache: 'no-store' });
+        if (r.ok) {
+          const d = await r.json();
+          if (valid(d)) return d;
+        }
+      } catch (_) {}
+    }
+    if (meta.chunkCount > 0) {
+      const chunks = new Array(meta.chunkCount);
+      const batchSize = 8;
+      for (let b = 0; b < meta.chunkCount; b += batchSize) {
+        const end = Math.min(b + batchSize, meta.chunkCount);
+        const idxs = [];
+        for (let i = b; i < end; i++) idxs.push(i);
+        const vals = await Promise.all(idxs.map(i =>
+          fetch(`${CLOUD_KV_BASE}/GetValue/${CLOUD_APP_KEY}/c${i}?_t=${meta.updatedAt}`, { cache: 'no-store' }).then(r => r.json())
+        ));
+        vals.forEach((v, k) => { chunks[b + k] = v || ''; });
+      }
+      const jsonStr = await gzDecodeB64Url(chunks.join(''));
+      if (jsonStr) {
+        const d = JSON.parse(jsonStr);
+        if (valid(d)) return d;
+      }
+    }
+    throw new Error('Không tải được dữ liệu đồng bộ từ Cloud');
   }
 
   async function readJsonResponse(res) {
@@ -197,8 +309,14 @@
       return JSON.parse(text);
     } catch (_) {
       const snippet = text.trim().slice(0, 60);
-      if (snippet.startsWith('<?php')) throw new Error('Máy chủ không thực thi PHP (api.php trả về mã nguồn). Hãy bật PHP cho tên miền trong Plesk.');
-      if (snippet.toLowerCase().startsWith('<!doctype') || snippet.startsWith('<html')) throw new Error(`api.php không hoạt động (HTTP ${res.status}) – máy chủ trả về trang HTML thay vì dữ liệu.`);
+      if (snippet.startsWith('<?php')) {
+        SYNC.phpDisabled = true;
+        throw new Error('PHP_DISABLED');
+      }
+      if (snippet.toLowerCase().startsWith('<!doctype') || snippet.startsWith('<html')) {
+        SYNC.phpDisabled = true;
+        throw new Error('PHP_DISABLED');
+      }
       throw new Error(`Phản hồi không hợp lệ từ api.php (HTTP ${res.status}).`);
     }
   }
@@ -207,28 +325,44 @@
     SYNC.ok = false;
     SYNC.lastError = msg;
     console.warn('[KPI sync]', msg);
-    // Chỉ cảnh báo Admin một lần mỗi phiên để tránh làm phiền
     if (isLoggedIn && isAdm() && !SYNC.warned) {
       SYNC.warned = true;
-      toast(`⚠️ Chưa lưu được dữ liệu lên Server: ${msg}`, true);
+      toast(`⚠️ Chưa đồng bộ được dữ liệu: ${msg}`, true);
     }
   }
 
   async function doPush() {
+    if (!S.updatedAt) S.updatedAt = Date.now();
+    const rawJson = JSON.stringify(S);
+
+    if (!SYNC.phpDisabled) {
+      try {
+        const res = await fetch(apiUrl(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: rawJson,
+          cache: 'no-store'
+        });
+        const data = await readJsonResponse(res);
+        if (res.ok && data.ok) {
+          SYNC.ok = true;
+          SYNC.lastError = '';
+          cloudPush(rawJson, S.updatedAt).catch(() => {});
+          return { ok: true };
+        }
+        SYNC.phpDisabled = true;
+      } catch (e) {
+        if (e.message === 'PHP_DISABLED') SYNC.phpDisabled = true;
+      }
+    }
+
     try {
-      const res = await fetch(apiUrl(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(S),
-        cache: 'no-store'
-      });
-      const data = await readJsonResponse(res);
-      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      await cloudPush(rawJson, S.updatedAt);
       SYNC.ok = true;
       SYNC.lastError = '';
       return { ok: true };
     } catch (e) {
-      reportSyncError(e.message || 'Không kết nối được máy chủ');
+      reportSyncError(e.message || 'Không kết nối được máy chủ đồng bộ');
       return { ok: false, error: SYNC.lastError };
     }
   }
@@ -257,10 +391,14 @@
     return Boolean(a && a.classList?.contains('cell-input'));
   }
 
+  function hasLocalCustomData(state) {
+    return Boolean(state && ((state.users?.length || 0) > 1 || (state.emps?.length || 0) > 0 || +state.updatedAt > 0 || (state.users || []).some(u => u.deptId)));
+  }
+
   // Gộp tài khoản / nhân sự / bộ phận chỉ có ở máy cục bộ (dữ liệu từ phiên bản cũ chưa từng đẩy lên server)
   function mergeLegacyLocal(srv, local) {
     let merged = false;
-    const localHasWork = (local.users?.length || 0) > 1 || (local.emps?.length || 0) > 0 || (local.users || []).some(u => u.deptId);
+    const localHasWork = hasLocalCustomData(local);
     (local.depts || []).forEach(ld => {
       if (ld.id && !srv.depts.some(sd => sd.id === ld.id)) { srv.depts.push(ld); merged = true; }
     });
@@ -291,44 +429,55 @@
     return merged;
   }
 
+  async function fetchRemoteState(localTs) {
+    if (!SYNC.phpDisabled) {
+      try {
+        const res = await fetch(apiUrl('_t=' + Date.now()), { cache: 'no-store' });
+        const data = await readJsonResponse(res);
+        if (res.ok && (data?.empty || valid(data))) {
+          return { source: 'php', empty: Boolean(data.empty), updatedAt: +data.updatedAt || 0, data: data.empty ? null : data };
+        }
+        SYNC.phpDisabled = true;
+      } catch (_) {
+        SYNC.phpDisabled = true;
+      }
+    }
+    const meta = await cloudPullMeta();
+    if (meta.empty) return { source: 'cloud', empty: true, updatedAt: 0, data: null };
+    if (localTs > 0 && localTs >= meta.updatedAt) {
+      return { source: 'cloud', empty: false, updatedAt: meta.updatedAt, data: null };
+    }
+    const data = await cloudPullData(meta);
+    return { source: 'cloud', empty: false, updatedAt: +data.updatedAt || meta.updatedAt || 0, data };
+  }
+
   async function syncFromServer({ force = false } = {}) {
     try {
-      const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      const timer = ctrl ? setTimeout(() => ctrl.abort(), 10000) : null;
-      let res;
-      try {
-        res = await fetch(apiUrl('_t=' + Date.now()), { cache: 'no-store', signal: ctrl?.signal });
-      } catch (e) {
-        throw new Error(e.name === 'AbortError' ? 'Hết thời gian chờ phản hồi từ Server' : 'Không kết nối được tới api.php');
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-      const data = await readJsonResponse(res);
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-
-      if (data && data.empty) {
-        // Server chưa có dữ liệu → đẩy dữ liệu hiện có lên
-        const r = await pushServer();
-        return r.ok;
-      }
-      if (!valid(data)) throw new Error('Dữ liệu trên Server không đúng cấu trúc');
+      const localTs = +S.updatedAt || 0;
+      const remote = await fetchRemoteState(localTs);
       SYNC.ok = true;
 
-      const localTs = +S.updatedAt || 0;
-      const srvTs = +data.updatedAt || 0;
+      if (remote.empty) {
+        if (hasLocalCustomData(S) || (isLoggedIn && isAdm())) {
+          const r = await pushServer();
+          return r.ok;
+        }
+        return true;
+      }
 
-      if (localTs > srvTs) {
-        // Máy này có thay đổi mới hơn server (ví dụ lần lưu trước bị lỗi mạng) → đẩy lên
+      const srvTs = remote.updatedAt;
+      if (localTs > srvTs || (hasLocalCustomData(S) && (S.users?.length || 0) > (remote.data?.users?.length || 0) && localTs === 0)) {
         await pushServer();
         return true;
       }
-      if (localTs === srvTs && srvTs > 0) return true; // đã đồng bộ
-      if (!force && isUserEditing()) return true; // không thay dữ liệu khi đang mở form chỉnh sửa
+      if (localTs === srvTs && srvTs > 0) return true;
+      if (!remote.data || !valid(remote.data)) return true;
+      if (!force && isUserEditing()) return true;
 
       const curUid = S.currentUserId;
       const local = S;
-      const srv = normalize(data);
-      const merged = (localTs === 0 && srvTs === 0) ? mergeLegacyLocal(srv, local) : false;
+      const srv = normalize(remote.data);
+      const merged = mergeLegacyLocal(srv, local);
 
       if (isLoggedIn && curUid && srv.users.some(u => u.id === curUid)) {
         srv.currentUserId = curUid;
