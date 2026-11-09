@@ -42,6 +42,7 @@
 
   /* ---------- State ---------- */
   let S = load();
+  let isLoggedIn = false;
   const UI = {
     view: 'dashboard', selDept: null, selEmp: null, empFilter: 'all',
     trackLevel: 'emp', trackMode: 'actual', trackDept: null, trackEmp: 'all',
@@ -2063,6 +2064,15 @@
     overlay.removeAttribute('hidden');
     overlay.style.display = 'flex';
 
+    if (!isLoggedIn) {
+      document.body.classList.add('auth-locked');
+    }
+
+    const closeBtn = $('#login-close-btn');
+    if (closeBtn) {
+      closeBtn.hidden = !isLoggedIn;
+    }
+
     const emailInp = $('#login-email');
     const pwdInp = $('#login-password');
     if (emailInp) emailInp.value = '';
@@ -2074,6 +2084,7 @@
     emailInp?.focus();
   }
   function hideLoginOverlay() {
+    if (!isLoggedIn) return;
     const overlay = $('#login-overlay');
     if (overlay) {
       overlay.hidden = true;
@@ -2103,7 +2114,11 @@
     }
 
     try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
+    isLoggedIn = true;
+    document.body.classList.remove('auth-locked');
     S.currentUserId = u.id;
+    UI.selDept = u.deptId || null;
+    UI.selEmp = u.empId || null;
     save();
     hideLoginOverlay();
     render(true);
@@ -3324,6 +3339,8 @@
       case 'change-pwd-modal': changePasswordModal(); break;
       case 'switch-user-modal': switchUserModal(); break;
       case 'do-logout':
+        isLoggedIn = false;
+        document.body.classList.add('auth-locked');
         closeModal();
         showLoginOverlay();
         toast('Đã đăng xuất khỏi tài khoản.');
@@ -3539,4 +3556,5 @@
   const h = location.hash.slice(1);
   UI.view = RENDER[h] ? h : 'dashboard';
   render(true);
+  showLoginOverlay();
 })();

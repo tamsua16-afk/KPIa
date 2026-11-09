@@ -1213,3 +1213,13 @@ td.col-act { text-align: right; }
     grid-column: 1 / -1;
   }
 }
+
+body.auth-locked .sidebar,
+body.auth-locked .main {
+  visibility: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+.login-close-btn[hidden] {
+  display: none !important;
+}

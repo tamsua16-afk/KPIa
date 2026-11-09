@@ -9,9 +9,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=202712" />
+  <link rel="stylesheet" href="css/styles.css?v=202715" />
 </head>
-<body>
+<body class="auth-locked">
   <div class="light-ambient" aria-hidden="true"></div>
 
   <aside class="sidebar" id="sidebar">
@@ -136,9 +136,9 @@
   <div class="toasts" id="toasts"></div>
 
   <!-- Màn hình Đăng nhập bằng Email & Mật khẩu -->
-  <div class="login-backdrop" id="login-overlay" hidden>
+  <div class="login-backdrop" id="login-overlay">
     <div class="login-card">
-      <button type="button" class="login-close-btn" data-action="close-login" title="Đóng màn hình đăng nhập">✕</button>
+      <button type="button" class="login-close-btn" id="login-close-btn" data-action="close-login" hidden title="Đóng màn hình đăng nhập">✕</button>
       <div class="login-brand">
         <div class="login-logo-container">
           <img src="assets/tenten-logo.png" alt="Tenten.vn by GMO" class="login-logo-img" />
@@ -164,7 +164,7 @@
     </div>
   </div>
 
-  <script src="js/data.js?v=202714"></script>
-  <script src="js/app.js?v=202714"></script>
+  <script src="js/data.js?v=202715"></script>
+  <script src="js/app.js?v=202715"></script>
 </body>
 </html>
