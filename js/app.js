@@ -611,8 +611,9 @@
   function getVisibleDepts() {
     const u = curUser();
     if (u.role === 'admin') return S.depts;
-    if (u.deptId) return S.depts.filter(d => d.id === u.deptId);
-    return S.depts;
+    const deptId = u.deptId || getCurEmp()?.deptId;
+    if (deptId) return S.depts.filter(d => d.id === deptId);
+    return [];
   }
 
   function getVisibleEmps() {
@@ -902,6 +903,8 @@
 
   /* ---------- Rules engine ---------- */
   function checkRules() {
+    const u = curUser();
+    const adminMode = u.role === 'admin';
     const issues = [], oks = [];
     const I = (level, scope, title, msg, nav) => issues.push({ level, scope, title, msg, nav });
     const fieldChecks = (k, sc, nav) => {
@@ -911,15 +914,18 @@
     };
 
     let n0 = issues.length;
-    const iw = sum(S.iid.map(k => k.weight));
-    const navIid = { view: 'iid' };
-    if (!S.iid.length) I('err', 'KPI Tổng IID', 'Chưa có KPI Tổng IID', 'Cần thiết lập KPI cấp Khối.', navIid);
-    else if (Math.abs(iw - 100) > .01) I('err', 'KPI Tổng IID', 'Tổng tỷ trọng KPI IID phải bằng 100%', `Hiện tại: ${fmt(iw)}%.`, navIid);
-    S.iid.forEach(k => fieldChecks(k, 'KPI Tổng IID', navIid));
-    if (issues.length === n0) oks.push(['KPI Tổng IID', `${S.iid.length} KPI · tổng tỷ trọng 100%`]);
+    if (adminMode) {
+      const iw = sum(S.iid.map(k => k.weight));
+      const navIid = { view: 'iid' };
+      if (!S.iid.length) I('err', 'KPI Tổng IID', 'Chưa có KPI Tổng IID', 'Cần thiết lập KPI cấp Khối.', navIid);
+      else if (Math.abs(iw - 100) > .01) I('err', 'KPI Tổng IID', 'Tổng tỷ trọng KPI IID phải bằng 100%', `Hiện tại: ${fmt(iw)}%.`, navIid);
+      S.iid.forEach(k => fieldChecks(k, 'KPI Tổng IID', navIid));
+      if (issues.length === n0) oks.push(['KPI Tổng IID', `${S.iid.length} KPI · tổng tỷ trọng 100%`]);
+    }
 
     const R = RULES.dept;
-    S.depts.forEach(d => {
+    const targetDepts = adminMode ? S.depts : getVisibleDepts();
+    targetDepts.forEach(d => {
       n0 = issues.length;
       const nav = { view: 'depts', dept: d.id }, sc = 'Bộ phận: ' + d.name;
       const a = sum(d.iidLinks.map(l => l.weight)), b = sum(d.kpis.map(k => k.weight));
@@ -932,7 +938,8 @@
     });
 
     const E = RULES.emp;
-    S.emps.forEach(e => {
+    const targetEmps = adminMode ? S.emps : getVisibleEmps();
+    targetEmps.forEach(e => {
       n0 = issues.length;
       const nav = { view: 'emps', emp: e.id }, sc = 'Cá nhân: ' + e.name;
       const d = deptById(e.deptId);
@@ -2298,6 +2305,11 @@
   /* ---------- Kiểm tra nguyên tắc ---------- */
   function viewRules() {
     if (isStaff()) return `<div class="card empty">Trang kiểm tra nguyên tắc dành cho cấp Quản lý và Giám đốc Khối.</div>`;
+    const u = curUser();
+    const myDepts = getVisibleDepts();
+    const scopeLabel = isAdm()
+      ? 'Toàn Khối IID (Tất cả bộ phận & nhân sự)'
+      : (myDepts.length ? `Bộ phận: ${myDepts.map(d => d.name).join(', ')}` : 'Phạm vi cá nhân & cấp dưới trực thuộc');
     const r = checkRules();
     const sorted = [...r.issues].sort((a, b) => (a.level === 'err' ? 0 : 1) - (b.level === 'err' ? 0 : 1));
     const navAttrs = n => n ? `data-action="goto" data-view="${n.view}" ${n.dept ? `data-dept="${n.dept}"` : ''} ${n.emp ? `data-emp="${n.emp}"` : ''}` : '';
@@ -2312,10 +2324,15 @@
       <div class="card stat"><span class="glow" style="background:var(--green)"></span><div class="label">Đạt toàn bộ</div><div class="value" style="color:var(--green)">${r.oks.length}</div><div class="hint">đối tượng tuân thủ 100% nguyên tắc</div></div>
     </section>
     <section class="card mt">
-      <div class="card-head"><h2>Vấn đề cần xử lý</h2><span class="tag ${r.errors ? 'bad' : 'good'}">${r.issues.length}</span></div>
-      ${list || '<div class="empty">🎉 Không có vấn đề nào – hệ thống KPI tuân thủ đầy đủ nguyên tắc.</div>'}
+      <div class="card-head" style="flex-wrap:wrap;gap:8px">
+        <h2>Vấn đề cần xử lý</h2>
+        <span class="tag dept">${esc(scopeLabel)}</span>
+        <span class="spacer"></span>
+        <span class="tag ${r.errors ? 'bad' : 'good'}">${r.issues.length}</span>
+      </div>
+      ${list || '<div class="empty">🎉 Không có vấn đề nào trong phạm vi bộ phận của bạn – KPI tuân thủ đầy đủ nguyên tắc.</div>'}
     </section>
-    <section class="card mt"><div class="card-head"><h2>Đã đạt nguyên tắc</h2><span class="tag good">${r.oks.length}</span></div>${oks}</section>`;
+    <section class="card mt"><div class="card-head"><h2>Đã đạt nguyên tắc (${esc(scopeLabel)})</h2><span class="tag good">${r.oks.length}</span></div>${oks}</section>`;
   }
 
   /* ---------- Phân quyền, Tài khoản & Mật khẩu ---------- */
