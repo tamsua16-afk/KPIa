@@ -666,7 +666,8 @@
     if (isSelfEmp(u, e)) return false;
     if (u.role === 'admin') return true;
     const myDepts = userDeptIds(u);
-    if (!myDepts.length || !e.deptId || !myDepts.includes(e.deptId)) return false;
+    const eDepts = empDeptIds(e);
+    if (!myDepts.length || !eDepts.some(id => myDepts.includes(id))) return false;
     const myLvl = roleLevel(u.role);
     const empLvl = roleLevel(e.role || 'staff');
     return empLvl < myLvl;
@@ -1809,7 +1810,7 @@
       UI.empFilter = 'all';
     }
     const visibleEmps = ((isAdm() || myDepts.length > 1) && UI.empFilter !== 'all')
-      ? allVisible.filter(e => e.deptId === UI.empFilter)
+      ? allVisible.filter(e => empDeptIds(e).includes(UI.empFilter))
       : allVisible;
     if (!UI.selEmp || !visibleEmps.some(e => e.id === UI.selEmp)) {
       UI.selEmp = visibleEmps[0]?.id || null;
@@ -2855,8 +2856,11 @@
   }
 
   function wireManagedDeptsEvents(f) {
+    if (!f || f.dataset.wiredManagedDepts === '1') return;
+    f.dataset.wiredManagedDepts = '1';
     const deptSel = f.querySelector('select[name="deptId"]');
     const cbs = () => [...f.querySelectorAll('input.managed-dept-cb')];
+    let lastPrimary = deptSel?.value || '';
     const syncBorder = () => {
       cbs().forEach(cb => {
         const lbl = cb.closest('label');
@@ -2865,30 +2869,44 @@
     };
     deptSel?.addEventListener('change', () => {
       const val = deptSel.value;
+      const checkedNow = cbs().filter(cb => cb.checked);
+      // Nếu trước đó chỉ chọn đúng 1 bộ phận chính thì khi đổi Bộ phận trực thuộc chính sẽ tự động bỏ bộ phận cũ và chuyển sang bộ phận mới
+      if (checkedNow.length === 1 && checkedNow[0].value === lastPrimary && val !== lastPrimary) {
+        checkedNow[0].checked = false;
+      }
       if (val) {
         const match = cbs().find(cb => cb.value === val);
         if (match) match.checked = true;
-        syncBorder();
       }
+      lastPrimary = val;
+      syncBorder();
     });
     cbs().forEach(cb => cb.addEventListener('change', () => {
-      // Nếu bỏ chọn đúng Team đang nằm ở ô "Bộ phận chính", tự động chuyển Bộ phận chính sang Team đang được tick còn lại
+      const checkedNow = cbs().filter(x => x.checked);
       if (!cb.checked && deptSel && deptSel.value === cb.value) {
-        const firstChecked = cbs().find(x => x.checked)?.value || '';
+        const firstChecked = checkedNow[0]?.value || '';
         deptSel.value = firstChecked;
-      } else if (cb.checked && deptSel && !deptSel.value) {
+        lastPrimary = firstChecked;
+      } else if (cb.checked && deptSel && (!deptSel.value || checkedNow.length === 1)) {
         deptSel.value = cb.value;
+        lastPrimary = cb.value;
       }
       syncBorder();
     }));
     f.querySelector('#btn-check-all-depts')?.addEventListener('click', () => {
       cbs().forEach(cb => { cb.checked = true; });
-      if (deptSel && !deptSel.value && cbs()[0]) deptSel.value = cbs()[0].value;
+      if (deptSel && !deptSel.value && cbs()[0]) {
+        deptSel.value = cbs()[0].value;
+        lastPrimary = deptSel.value;
+      }
       syncBorder();
     });
     f.querySelector('#btn-uncheck-extra-depts')?.addEventListener('click', () => {
       const primary = deptSel?.value || cbs().find(x => x.checked)?.value || '';
-      if (deptSel && primary) deptSel.value = primary;
+      if (deptSel && primary) {
+        deptSel.value = primary;
+        lastPrimary = primary;
+      }
       cbs().forEach(cb => { cb.checked = Boolean(primary && cb.value === primary); });
       syncBorder();
     });
@@ -2904,10 +2922,14 @@
         if (!primaryDept || !checkedDepts.includes(primaryDept)) {
           primaryDept = checkedDepts[0];
         }
-        return { primaryDept, managedDeptIds: [...new Set(checkedDepts)] };
+        const ordered = [primaryDept, ...checkedDepts.filter(id => id !== primaryDept)];
+        return { primaryDept, managedDeptIds: [...new Set(ordered)] };
       } else {
-        // Người dùng đã bỏ tick toàn bộ các Team
-        return { primaryDept: null, managedDeptIds: [] };
+        // Nếu người dùng đã bỏ tick hết checkbox nhưng vẫn chọn Bộ phận chính ở dropdown thì lấy theo Bộ phận chính
+        return {
+          primaryDept,
+          managedDeptIds: primaryDept ? [primaryDept] : []
+        };
       }
     }
     return {
@@ -3083,16 +3105,21 @@
     e.title = u.title;
     e.role = u.role;
 
-    // Cập nhật thông tin Manager trên các Bộ phận (thêm vào team mới và gỡ khỏi team đã bỏ chọn)
+    // Cập nhật thông tin Manager / Leader phụ trách trên các Bộ phận (thêm vào team mới và gỡ khỏi team đã bỏ chọn)
+    const isDeptHead = u.role === 'manager' || u.role === 'leader';
     S.depts.forEach(d => {
-      if (managedList.includes(d.id) && u.role === 'manager') {
-        d.leader = u.name;
-        d.managerId = u.id;
+      if (managedList.includes(d.id) && isDeptHead) {
+        if (!d.leader || d.managerId === u.id || d.id === u.deptId) {
+          d.leader = u.name;
+          d.managerId = u.id;
+        }
       } else if (d.managerId === u.id || (d.leader && u.name && d.leader.trim().toLowerCase() === u.name.trim().toLowerCase())) {
-        // Tìm xem có Manager nào khác đang quản lý bộ phận này không
-        const otherMgr = S.users.find(o => o.id !== u.id && o.role === 'manager' && Array.isArray(o.managedDeptIds) && o.managedDeptIds.includes(d.id));
-        d.managerId = otherMgr ? otherMgr.id : null;
-        d.leader = otherMgr ? otherMgr.name : '';
+        // Tìm xem có Leader hoặc Manager nào khác đang phụ trách bộ phận này không
+        const otherHead =
+          S.users.find(o => o.id !== u.id && o.role === 'leader' && Array.isArray(o.managedDeptIds) && o.managedDeptIds.includes(d.id)) ||
+          S.users.find(o => o.id !== u.id && o.role === 'manager' && Array.isArray(o.managedDeptIds) && o.managedDeptIds.includes(d.id));
+        d.managerId = otherHead ? otherHead.id : null;
+        d.leader = otherHead ? otherHead.name : '';
       }
     });
     return moved;
@@ -3109,7 +3136,7 @@
       e.deptId = managedList[0] || null;
     }
 
-    S.users.filter(u => u.empId === e.id || String(u.name || '').toLowerCase() === String(e.name || '').toLowerCase()).forEach(u => {
+    S.users.filter(u => u.empId === e.id || String(u.name || '').trim().toLowerCase() === String(e.name || '').trim().toLowerCase()).forEach(u => {
       u.empId = e.id;
       u.deptId = e.deptId || null;
       u.managedDeptIds = [...managedList];
@@ -4019,40 +4046,55 @@
     const old = id ? deptById(id) : null;
     const d = old || { name: '', leader: '', color: DEPT_COLORS[S.depts.length % DEPT_COLORS.length] };
     const mgrUsers = S.users.filter(u => u.role === 'manager' || u.role === 'leader');
-    const curMgrUser = old ? mgrUsers.find(u => userDeptIds(u).includes(old.id) || (old.leader && u.name.toLowerCase() === old.leader.toLowerCase())) : null;
+    const curMgrUser = old
+      ? (mgrUsers.find(u => old.managerId && u.id === old.managerId) ||
+         mgrUsers.find(u => old.leader && u.name.trim().toLowerCase() === old.leader.trim().toLowerCase()) ||
+         mgrUsers.find(u => userDeptIds(u).includes(old.id)))
+      : null;
     openModal(old ? `✎ Sửa bộ phận` : '＋ Thêm bộ phận', `
       ${field('Tên bộ phận / Team *', `<input type="text" name="name" required value="${esc(d.name)}" id="f-dept-name">`, true)}
-      ${field('Chọn nhanh Manager / Trưởng nhóm phụ trách', `<select name="managerUid" id="f-dept-mgr-uid">
+      ${field('Chọn nhanh Manager / Trưởng nhóm (Leader) phụ trách', `<select name="managerUid" id="f-dept-mgr-uid">
         <option value="">— Tự nhập tên hoặc chọn tài khoản Manager/Leader —</option>
         ${mgrUsers.map(u => `<option value="${esc(u.id)}" data-name="${esc(u.name)}" ${curMgrUser?.id === u.id ? 'selected' : ''}>${esc(u.name)} (${roleOf(u).badge} · ${esc(u.email)})</option>`).join('')}
-      </select>`, true, 'Khi chọn một Manager tại đây, bộ phận này sẽ tự động được thêm vào danh sách Team do Manager đó quản lý')}
-      ${field('Tên Trưởng bộ phận hiển thị', `<input type="text" name="leader" id="f-dept-leader" value="${esc(d.leader)}">`)}
+      </select>`, true, 'Khi chọn một Manager hoặc Leader tại đây, bộ phận này sẽ tự động được gán cho tài khoản đó phụ trách')}
+      ${field('Tên Trưởng bộ phận / Leader hiển thị', `<input type="text" name="leader" id="f-dept-leader" value="${esc(d.leader)}">`)}
       ${field('Màu nhận diện', `<div class="swatches">${DEPT_COLORS.map(c => `<label class="swatch" style="background:${c}"><input type="radio" name="color" value="${c}" ${c === d.color ? 'checked' : ''}><span></span></label>`).join('')}</div>`)}
     `, fd => {
       const v = Object.fromEntries(fd);
       if (!v.name.trim()) { toast('Vui lòng nhập tên bộ phận', true); return false; }
+      const prevLeaderName = old ? (old.leader || '').trim() : '';
+      const typedLeader = (v.leader || '').trim();
       let targetDept = old;
       if (old) {
-        Object.assign(old, { name: v.name.trim(), leader: v.leader.trim(), color: v.color || old.color });
+        Object.assign(old, { name: v.name.trim(), leader: typedLeader, color: v.color || old.color });
       } else {
-        targetDept = { id: uid('d'), name: v.name.trim(), leader: v.leader.trim(), color: v.color || DEPT_COLORS[0], iidLinks: [], kpis: [] };
+        targetDept = { id: uid('d'), name: v.name.trim(), leader: typedLeader, color: v.color || DEPT_COLORS[0], iidLinks: [], kpis: [] };
         S.depts.push(targetDept);
         UI.selDept = targetDept.id;
       }
       if (v.managerUid) {
         const mu = S.users.find(x => x.id === v.managerUid);
         if (mu) {
-          targetDept.managerId = mu.id;
-          if (!targetDept.leader) targetDept.leader = mu.name;
-          const mSet = new Set(userDeptIds(mu));
-          mSet.add(targetDept.id);
-          mu.managedDeptIds = [...mSet];
-          if (!mu.deptId) mu.deptId = targetDept.id;
+          const curDepts = userDeptIds(mu);
+          // Nếu là Leader và trước đó chỉ có 1 bộ phận mặc định thì chuyển sang bộ phận mới; nếu quản lý nhiều team thì thêm vào danh sách
+          if (mu.role === 'leader' && curDepts.length <= 1) {
+            mu.deptId = targetDept.id;
+            mu.managedDeptIds = [targetDept.id];
+          } else {
+            const mSet = new Set(curDepts);
+            mSet.add(targetDept.id);
+            mu.managedDeptIds = [...mSet];
+            if (!mu.deptId) mu.deptId = targetDept.id;
+          }
           linkUserToEmp(mu);
+          targetDept.managerId = mu.id;
+          targetDept.leader = (!typedLeader || typedLeader === prevLeaderName) ? mu.name : typedLeader;
         }
       }
-      save(); render(); toast(old ? 'Đã cập nhật bộ phận' : 'Đã thêm bộ phận mới');
+      save(); render(); toast(old ? 'Đã cập nhật bộ phận & người phụ trách' : 'Đã thêm bộ phận mới');
     }, f => {
+      if (!f || f.dataset.wiredDeptModal === '1') return;
+      f.dataset.wiredDeptModal = '1';
       const sel = $('#f-dept-mgr-uid', f);
       const inp = $('#f-dept-leader', f);
       sel?.addEventListener('change', () => {
@@ -4068,6 +4110,7 @@
     const e = old || { name: '', title: '', role: 'staff', deptId: UI.empFilter !== 'all' ? UI.empFilter : S.depts[0]?.id };
     if (!S.depts.length) { toast('Cần tạo bộ phận trước khi thêm nhân sự', true); return; }
     const curManaged = old ? empDeptIds(old) : (e.deptId ? [e.deptId] : []);
+    const canAssignMultiTeams = isAdm() || curUser().role === 'manager';
     openModal(old ? '✎ Sửa nhân sự' : '＋ Thêm nhân sự', `
       ${field('Họ tên *', `<input type="text" name="name" required value="${esc(e.name)}" id="f-emp-name">`, true)}
       ${field('Chức danh', `<input type="text" name="title" value="${esc(e.title)}">`)}
@@ -4075,11 +4118,11 @@
         ${Object.values(ROLES).map(r => opt(r.id, `${r.badge} (${r.title})`, (e.role || 'staff') === r.id)).join('')}
       </select>`)}
       ${field('Bộ phận trực thuộc chính', `<select name="deptId">${S.depts.map(d => opt(d.id, d.name, d.id === e.deptId)).join('')}</select>`)}
-      ${isAdm() ? buildManagedDeptsFieldHtml(curManaged, e.deptId) : ''}
+      ${canAssignMultiTeams ? buildManagedDeptsFieldHtml(curManaged, e.deptId) : ''}
     `, (fd, f) => {
       const v = Object.fromEntries(fd);
       if (!v.name.trim()) { toast('Vui lòng nhập họ tên', true); return false; }
-      const { primaryDept: resolvedPrimary, managedDeptIds } = isAdm()
+      const { primaryDept: resolvedPrimary, managedDeptIds } = canAssignMultiTeams
         ? resolveManagedDeptsFromForm(fd, f, v.role === 'admin')
         : { primaryDept: v.deptId || S.depts[0]?.id, managedDeptIds: [v.deptId || S.depts[0]?.id].filter(Boolean) };
       const primaryDept = resolvedPrimary || S.depts[0]?.id;
@@ -4100,6 +4143,10 @@
         }
         Object.assign(target, { name: v.name.trim(), title: v.title.trim(), role: v.role, deptId: primaryDept, managedDeptIds });
         syncUsersFromEmp(target);
+        if (UI.empFilter !== 'all' && !managedDeptIds.includes(UI.empFilter)) {
+          UI.empFilter = primaryDept || 'all';
+        }
+        UI.selEmp = target.id;
       } else {
         const ne = { id: uid('e'), name: v.name.trim(), title: v.title.trim(), role: v.role, deptId: primaryDept, managedDeptIds, iidLinks: [], deptLinks: [], kpis: [] };
         S.emps.push(ne); UI.selEmp = ne.id;
