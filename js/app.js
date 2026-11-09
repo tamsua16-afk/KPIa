@@ -158,9 +158,23 @@
         e = d.emps.find(x => !d.users.some(o => o !== u && o.empId === x.id) && String(x.name || '').toLowerCase() === u.name.toLowerCase()) || null;
       }
       const mSet = new Set();
-      if (Array.isArray(u.managedDeptIds)) u.managedDeptIds.forEach(id => { if (validDeptIds.has(id)) mSet.add(id); });
-      if (e && Array.isArray(e.managedDeptIds)) e.managedDeptIds.forEach(id => { if (validDeptIds.has(id)) mSet.add(id); });
-      if (u.deptId && validDeptIds.has(u.deptId)) mSet.add(u.deptId);
+      if (Array.isArray(u.managedDeptIds)) {
+        u.managedDeptIds.forEach(id => { if (validDeptIds.has(id)) mSet.add(id); });
+      } else if (e && Array.isArray(e.managedDeptIds)) {
+        e.managedDeptIds.forEach(id => { if (validDeptIds.has(id)) mSet.add(id); });
+      } else if (u.deptId && validDeptIds.has(u.deptId)) {
+        mSet.add(u.deptId);
+      }
+      if (u.role !== 'admin') {
+        if (mSet.size === 0 && u.deptId && validDeptIds.has(u.deptId)) {
+          mSet.add(u.deptId);
+        }
+        if (u.deptId && !mSet.has(u.deptId) && mSet.size > 0) {
+          u.deptId = [...mSet][0];
+        } else if (!u.deptId && mSet.size > 0) {
+          u.deptId = [...mSet][0];
+        }
+      }
       if (e) {
         u.empId = e.id;
         if (u.deptId) e.deptId = u.deptId;
@@ -168,10 +182,6 @@
           u.deptId = e.deptId;
           if (validDeptIds.has(e.deptId)) mSet.add(e.deptId);
         }
-      }
-      if (!u.deptId && mSet.size && u.role !== 'admin') {
-        u.deptId = [...mSet][0];
-        if (e) e.deptId = u.deptId;
       }
       u.managedDeptIds = [...mSet];
       if (e) e.managedDeptIds = [...mSet];
@@ -607,31 +617,27 @@
     if (!u) return [];
     if (u.role === 'admin') return S.depts.map(d => d.id);
     const set = new Set();
+    if (Array.isArray(u.managedDeptIds)) {
+      u.managedDeptIds.forEach(id => { if (id) set.add(id); });
+    }
     if (u.deptId) set.add(u.deptId);
-    if (Array.isArray(u.managedDeptIds)) u.managedDeptIds.forEach(id => { if (id) set.add(id); });
     const emp = u.empId ? S.emps.find(x => x.id === u.empId) : S.emps.find(x => x.name && u.name && x.name.toLowerCase() === u.name.toLowerCase());
-    if (emp) {
+    if (emp && !Array.isArray(u.managedDeptIds)) {
       if (emp.deptId) set.add(emp.deptId);
       if (Array.isArray(emp.managedDeptIds)) emp.managedDeptIds.forEach(id => { if (id) set.add(id); });
-    }
-    if (u.role === 'manager' || u.role === 'leader') {
-      S.depts.forEach(d => {
-        if (d.managerId && d.managerId === u.id) set.add(d.id);
-        else if (d.leader && u.name && d.leader.trim().toLowerCase() === u.name.trim().toLowerCase()) set.add(d.id);
-      });
     }
     return [...set].filter(id => S.depts.some(d => d.id === id));
   }
 
   function empDeptIds(e) {
     if (!e) return [];
-    const set = new Set();
-    if (e.deptId) set.add(e.deptId);
-    if (Array.isArray(e.managedDeptIds)) e.managedDeptIds.forEach(id => { if (id) set.add(id); });
     const linkedU = S.users.find(u => u.empId === e.id || (u.name && e.name && u.name.toLowerCase() === e.name.toLowerCase()));
-    if (linkedU) {
-      userDeptIds(linkedU).forEach(id => set.add(id));
+    if (linkedU && Array.isArray(linkedU.managedDeptIds)) {
+      return userDeptIds(linkedU);
     }
+    const set = new Set();
+    if (Array.isArray(e.managedDeptIds)) e.managedDeptIds.forEach(id => { if (id) set.add(id); });
+    if (e.deptId) set.add(e.deptId);
     return [...set].filter(id => S.depts.some(d => d.id === id));
   }
 
@@ -2842,16 +2848,49 @@
         syncBorder();
       }
     });
-    cbs().forEach(cb => cb.addEventListener('change', syncBorder));
+    cbs().forEach(cb => cb.addEventListener('change', () => {
+      // Nếu bỏ chọn đúng Team đang nằm ở ô "Bộ phận chính", tự động chuyển Bộ phận chính sang Team đang được tick còn lại
+      if (!cb.checked && deptSel && deptSel.value === cb.value) {
+        const firstChecked = cbs().find(x => x.checked)?.value || '';
+        deptSel.value = firstChecked;
+      } else if (cb.checked && deptSel && !deptSel.value) {
+        deptSel.value = cb.value;
+      }
+      syncBorder();
+    }));
     f.querySelector('#btn-check-all-depts')?.addEventListener('click', () => {
       cbs().forEach(cb => { cb.checked = true; });
+      if (deptSel && !deptSel.value && cbs()[0]) deptSel.value = cbs()[0].value;
       syncBorder();
     });
     f.querySelector('#btn-uncheck-extra-depts')?.addEventListener('click', () => {
-      const primary = deptSel?.value || '';
-      cbs().forEach(cb => { cb.checked = (cb.value === primary); });
+      const primary = deptSel?.value || cbs().find(x => x.checked)?.value || '';
+      if (deptSel && primary) deptSel.value = primary;
+      cbs().forEach(cb => { cb.checked = Boolean(primary && cb.value === primary); });
       syncBorder();
     });
+  }
+
+  function resolveManagedDeptsFromForm(fd, f, isRoleAdmin = false) {
+    if (isRoleAdmin) return { primaryDept: null, managedDeptIds: [] };
+    const hasCbs = f && f.querySelectorAll('input.managed-dept-cb').length > 0;
+    let primaryDept = fd.get('deptId') || null;
+    if (hasCbs) {
+      const checkedDepts = fd.getAll('managedDeptIds').filter(Boolean);
+      if (checkedDepts.length > 0) {
+        if (!primaryDept || !checkedDepts.includes(primaryDept)) {
+          primaryDept = checkedDepts[0];
+        }
+        return { primaryDept, managedDeptIds: [...new Set(checkedDepts)] };
+      } else {
+        // Người dùng đã bỏ tick toàn bộ các Team
+        return { primaryDept: null, managedDeptIds: [] };
+      }
+    }
+    return {
+      primaryDept,
+      managedDeptIds: primaryDept ? [primaryDept] : []
+    };
   }
 
   function assignTeamsModal(uidToEdit) {
@@ -2871,24 +2910,20 @@
         ${S.depts.map(d => opt(d.id, d.name, d.id === u.deptId)).join('')}
       </select>`)}
       ${buildManagedDeptsFieldHtml(curManaged, u.deptId)}
-    `, fd => {
+    `, (fd, f) => {
       const target = S.users.find(x => x.id === uidToEdit);
       if (!target) return false;
       const role = fd.get('role') || target.role;
-      let primaryDept = fd.get('deptId') || null;
-      const checkedDepts = fd.getAll('managedDeptIds').filter(Boolean);
-      const mSet = new Set(checkedDepts);
-      if (primaryDept) mSet.add(primaryDept);
-      else if (mSet.size) primaryDept = [...mSet][0];
+      const { primaryDept, managedDeptIds } = resolveManagedDeptsFromForm(fd, f, role === 'admin');
 
       target.role = role;
       target.deptId = primaryDept;
-      target.managedDeptIds = [...mSet];
+      target.managedDeptIds = managedDeptIds;
       linkUserToEmp(target);
       computeRollups();
       save(); render();
-      const names = [...mSet].map(id => deptById(id)?.name).filter(Boolean).join(', ') || 'Chưa gán';
-      toast(`✅ Đã cập nhật phân quyền cho "${target.name}": Quản lý ${mSet.size} Team (${names})!`);
+      const names = managedDeptIds.map(id => deptById(id)?.name).filter(Boolean).join(', ') || 'Chưa gán';
+      toast(`✅ Đã lưu phân quyền cho "${target.name}": Quản lý ${managedDeptIds.length} Team (${names})!`);
     }, f => wireManagedDeptsEvents(f));
   }
 
@@ -2911,7 +2946,7 @@
         ${S.depts.map(d => opt(d.id, d.name, d.id === u.deptId)).join('')}
       </select>`, true)}
       ${buildManagedDeptsFieldHtml(curManaged, u.deptId)}
-    `, fd => {
+    `, (fd, f) => {
       const v = Object.fromEntries(fd);
       const name = String(v.name || '').trim();
       const email = String(v.email || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase();
@@ -2935,12 +2970,7 @@
         toast(`Email ${email} đã được dùng cho tài khoản "${dup.name}"!`, true);
         return false;
       }
-      let primaryDept = v.deptId || null;
-      const checkedDepts = fd.getAll('managedDeptIds').filter(Boolean);
-      const mSet = new Set(checkedDepts);
-      if (primaryDept) mSet.add(primaryDept);
-      else if (mSet.size && v.role !== 'admin') primaryDept = [...mSet][0];
-      const managedDeptIds = v.role === 'admin' ? [] : [...mSet];
+      const { primaryDept, managedDeptIds } = resolveManagedDeptsFromForm(fd, f, v.role === 'admin');
 
       const patch = { name, email, password, role: v.role, title: String(v.title || '').trim(), deptId: primaryDept, managedDeptIds };
       let acc;
@@ -2976,11 +3006,14 @@
     if (!e) {
       e = S.emps.find(x => !S.users.some(o => o !== u && o.empId === x.id) && String(x.name || '').toLowerCase() === String(u.name || '').toLowerCase()) || null;
     }
-    const mSet = new Set(Array.isArray(u.managedDeptIds) ? u.managedDeptIds.filter(Boolean) : []);
-    if (u.deptId) mSet.add(u.deptId);
+    const hasExplicitManaged = Array.isArray(u.managedDeptIds);
+    const mSet = new Set(hasExplicitManaged ? u.managedDeptIds.filter(Boolean) : (u.deptId ? [u.deptId] : []));
+    if (!hasExplicitManaged && u.deptId) mSet.add(u.deptId);
     const managedList = [...mSet].filter(id => S.depts.some(d => d.id === id));
     u.managedDeptIds = managedList;
-    if (!u.deptId && managedList.length && u.role !== 'admin') {
+    if (u.deptId && !managedList.includes(u.deptId)) {
+      u.deptId = managedList[0] || null;
+    } else if (!u.deptId && managedList.length && u.role !== 'admin') {
       u.deptId = managedList[0];
     }
 
@@ -2994,7 +3027,6 @@
     let moved = false;
     const nextDeptId = u.deptId || null;
     if (e.deptId !== nextDeptId) {
-      // Chỉ gỡ liên kết KPI của bộ phận cũ nếu bộ phận cũ không nằm trong danh sách các team mà nhân sự này quản lý
       const allowedKpiIds = new Set();
       managedList.forEach(did => {
         (deptById(did)?.kpis || []).forEach(k => allowedKpiIds.add(k.id));
@@ -3008,25 +3040,32 @@
     e.name = u.name;
     e.title = u.title;
     e.role = u.role;
-    if (u.role === 'manager') {
-      managedList.forEach(did => {
-        const d = deptById(did);
-        if (d) {
-          d.leader = u.name;
-          d.managerId = u.id;
-        }
-      });
-    }
+
+    // Cập nhật thông tin Manager trên các Bộ phận (thêm vào team mới và gỡ khỏi team đã bỏ chọn)
+    S.depts.forEach(d => {
+      if (managedList.includes(d.id) && u.role === 'manager') {
+        d.leader = u.name;
+        d.managerId = u.id;
+      } else if (d.managerId === u.id || (d.leader && u.name && d.leader.trim().toLowerCase() === u.name.trim().toLowerCase())) {
+        // Tìm xem có Manager nào khác đang quản lý bộ phận này không
+        const otherMgr = S.users.find(o => o.id !== u.id && o.role === 'manager' && Array.isArray(o.managedDeptIds) && o.managedDeptIds.includes(d.id));
+        d.managerId = otherMgr ? otherMgr.id : null;
+        d.leader = otherMgr ? otherMgr.name : '';
+      }
+    });
     return moved;
   }
 
   // Chiều ngược lại: sửa hồ sơ nhân sự → cập nhật tài khoản đăng nhập liên kết
   function syncUsersFromEmp(e) {
     if (!e) return;
-    const mSet = new Set(Array.isArray(e.managedDeptIds) ? e.managedDeptIds.filter(Boolean) : []);
-    if (e.deptId) mSet.add(e.deptId);
+    const hasExplicitManaged = Array.isArray(e.managedDeptIds);
+    const mSet = new Set(hasExplicitManaged ? e.managedDeptIds.filter(Boolean) : (e.deptId ? [e.deptId] : []));
     const managedList = [...mSet].filter(id => S.depts.some(d => d.id === id));
     e.managedDeptIds = managedList;
+    if (e.deptId && !managedList.includes(e.deptId)) {
+      e.deptId = managedList[0] || null;
+    }
 
     S.users.filter(u => u.empId === e.id || String(u.name || '').toLowerCase() === String(e.name || '').toLowerCase()).forEach(u => {
       u.empId = e.id;
@@ -3035,15 +3074,7 @@
       u.name = e.name;
       u.title = e.title;
       if (u.role !== 'admin') u.role = e.role || u.role;
-      if (u.role === 'manager') {
-        managedList.forEach(did => {
-          const d = deptById(did);
-          if (d) {
-            d.leader = u.name;
-            d.managerId = u.id;
-          }
-        });
-      }
+      linkUserToEmp(u);
     });
   }
 
@@ -4003,14 +4034,17 @@
       </select>`)}
       ${field('Bộ phận trực thuộc chính', `<select name="deptId">${S.depts.map(d => opt(d.id, d.name, d.id === e.deptId)).join('')}</select>`)}
       ${isAdm() ? buildManagedDeptsFieldHtml(curManaged, e.deptId) : ''}
-    `, fd => {
+    `, (fd, f) => {
       const v = Object.fromEntries(fd);
       if (!v.name.trim()) { toast('Vui lòng nhập họ tên', true); return false; }
-      let primaryDept = v.deptId || S.depts[0]?.id;
-      const checkedDepts = isAdm() ? fd.getAll('managedDeptIds').filter(Boolean) : [primaryDept];
-      const mSet = new Set(checkedDepts);
-      if (primaryDept) mSet.add(primaryDept);
-      const managedDeptIds = [...mSet];
+      const { primaryDept: resolvedPrimary, managedDeptIds } = isAdm()
+        ? resolveManagedDeptsFromForm(fd, f, v.role === 'admin')
+        : { primaryDept: v.deptId || S.depts[0]?.id, managedDeptIds: [v.deptId || S.depts[0]?.id].filter(Boolean) };
+      const primaryDept = resolvedPrimary || S.depts[0]?.id;
+      if (v.role !== 'admin' && !managedDeptIds.length) {
+        toast('Vui lòng chọn ít nhất 1 Bộ phận / Team quản lý hoặc trực thuộc', true);
+        return false;
+      }
 
       if (old) {
         const target = empById(old.id) || old;
