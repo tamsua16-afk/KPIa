@@ -148,6 +148,18 @@
       x.deptLinks = x.deptLinks || [];
       x.kpis = (x.kpis || []).map(k => normKpi(k, isLegacy12));
     });
+    // Đồng bộ liên kết giữa danh sách Tài khoản (d.users) và Hồ sơ nhân sự (d.emps)
+    d.users.forEach(u => {
+      let e = u.empId ? d.emps.find(x => x.id === u.empId) : null;
+      if (!e && u.name) {
+        e = d.emps.find(x => !d.users.some(o => o !== u && o.empId === x.id) && String(x.name || '').toLowerCase() === u.name.toLowerCase()) || null;
+      }
+      if (e) {
+        u.empId = e.id;
+        if (u.deptId) e.deptId = u.deptId;
+        else if (u.deptId === undefined && e.deptId && u.role !== 'admin') u.deptId = e.deptId;
+      }
+    });
     return d;
   }
 
@@ -169,74 +181,177 @@
     return normalize(typeof buildCleanData === 'function' ? buildCleanData() : buildSampleData());
   }
 
-  async function pushServer() {
+  /* ---------- Đồng bộ dữ liệu với Server (api.php) ----------
+     - Mỗi lần lưu có thay đổi thật: S.updatedAt = thời điểm lưu → đẩy lên server.
+     - Khi tải từ server: bản nào mới hơn (updatedAt lớn hơn) thì thắng,
+       tránh việc dữ liệu cũ trên server ghi đè thay đổi vừa sửa trên máy (và ngược lại). */
+  const SYNC = { ok: null, lastError: '', warned: false, pushing: null, pending: false };
+
+  function apiUrl(qs = '') {
+    return 'api.php' + (qs ? '?' + qs : '');
+  }
+
+  async function readJsonResponse(res) {
+    const text = await res.text();
     try {
-      const res = await fetch('api.php', {
+      return JSON.parse(text);
+    } catch (_) {
+      const snippet = text.trim().slice(0, 60);
+      if (snippet.startsWith('<?php')) throw new Error('Máy chủ không thực thi PHP (api.php trả về mã nguồn). Hãy bật PHP cho tên miền trong Plesk.');
+      if (snippet.toLowerCase().startsWith('<!doctype') || snippet.startsWith('<html')) throw new Error(`api.php không hoạt động (HTTP ${res.status}) – máy chủ trả về trang HTML thay vì dữ liệu.`);
+      throw new Error(`Phản hồi không hợp lệ từ api.php (HTTP ${res.status}).`);
+    }
+  }
+
+  function reportSyncError(msg) {
+    SYNC.ok = false;
+    SYNC.lastError = msg;
+    console.warn('[KPI sync]', msg);
+    // Chỉ cảnh báo Admin một lần mỗi phiên để tránh làm phiền
+    if (isLoggedIn && isAdm() && !SYNC.warned) {
+      SYNC.warned = true;
+      toast(`⚠️ Chưa lưu được dữ liệu lên Server: ${msg}`, true);
+    }
+  }
+
+  async function doPush() {
+    try {
+      const res = await fetch(apiUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(S)
+        body: JSON.stringify(S),
+        cache: 'no-store'
       });
-      return res.ok;
-    } catch (_) {
+      const data = await readJsonResponse(res);
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      SYNC.ok = true;
+      SYNC.lastError = '';
+      return { ok: true };
+    } catch (e) {
+      reportSyncError(e.message || 'Không kết nối được máy chủ');
+      return { ok: false, error: SYNC.lastError };
+    }
+  }
+
+  // Gộp các lần lưu liên tiếp, luôn đẩy bản mới nhất
+  async function pushServer() {
+    if (SYNC.pushing) {
+      SYNC.pending = true;
+      return SYNC.pushing;
+    }
+    SYNC.pushing = (async () => {
+      let r;
+      do {
+        SYNC.pending = false;
+        r = await doPush();
+      } while (SYNC.pending);
+      SYNC.pushing = null;
+      return r;
+    })();
+    return SYNC.pushing;
+  }
+
+  function isUserEditing() {
+    if (!$('#modal')?.hidden) return true;
+    const a = document.activeElement;
+    return Boolean(a && a.classList?.contains('cell-input'));
+  }
+
+  // Gộp tài khoản / nhân sự / bộ phận chỉ có ở máy cục bộ (dữ liệu từ phiên bản cũ chưa từng đẩy lên server)
+  function mergeLegacyLocal(srv, local) {
+    let merged = false;
+    const localHasWork = (local.users?.length || 0) > 1 || (local.emps?.length || 0) > 0 || (local.users || []).some(u => u.deptId);
+    (local.depts || []).forEach(ld => {
+      if (ld.id && !srv.depts.some(sd => sd.id === ld.id)) { srv.depts.push(ld); merged = true; }
+    });
+    (local.emps || []).forEach(le => {
+      const se = srv.emps.find(x => x.id === le.id || (le.name && String(x.name || '').toLowerCase() === String(le.name).toLowerCase()));
+      if (!se && le.id) {
+        srv.emps.push(le);
+        merged = true;
+      } else if (se && localHasWork && le.deptId && se.deptId !== le.deptId) {
+        se.deptId = le.deptId;
+        merged = true;
+      }
+    });
+    (local.users || []).forEach(lu => {
+      const em = String(lu.email || '').toLowerCase();
+      if (!em) return;
+      const su = srv.users.find(x => String(x.email || '').toLowerCase() === em);
+      if (!su) {
+        srv.users.push(lu);
+        merged = true;
+      } else if (localHasWork) {
+        if (lu.deptId !== undefined && su.deptId !== lu.deptId) { su.deptId = lu.deptId; merged = true; }
+        if (lu.role && su.role !== lu.role) { su.role = lu.role; merged = true; }
+        if (lu.title && su.title !== lu.title) { su.title = lu.title; merged = true; }
+        if (lu.password && su.password !== lu.password) { su.password = lu.password; merged = true; }
+      }
+    });
+    return merged;
+  }
+
+  async function syncFromServer({ force = false } = {}) {
+    try {
+      const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), 10000) : null;
+      let res;
+      try {
+        res = await fetch(apiUrl('_t=' + Date.now()), { cache: 'no-store', signal: ctrl?.signal });
+      } catch (e) {
+        throw new Error(e.name === 'AbortError' ? 'Hết thời gian chờ phản hồi từ Server' : 'Không kết nối được tới api.php');
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      if (data && data.empty) {
+        // Server chưa có dữ liệu → đẩy dữ liệu hiện có lên
+        const r = await pushServer();
+        return r.ok;
+      }
+      if (!valid(data)) throw new Error('Dữ liệu trên Server không đúng cấu trúc');
+      SYNC.ok = true;
+
+      const localTs = +S.updatedAt || 0;
+      const srvTs = +data.updatedAt || 0;
+
+      if (localTs > srvTs) {
+        // Máy này có thay đổi mới hơn server (ví dụ lần lưu trước bị lỗi mạng) → đẩy lên
+        await pushServer();
+        return true;
+      }
+      if (localTs === srvTs && srvTs > 0) return true; // đã đồng bộ
+      if (!force && isUserEditing()) return true; // không thay dữ liệu khi đang mở form chỉnh sửa
+
+      const curUid = S.currentUserId;
+      const local = S;
+      const srv = normalize(data);
+      const merged = (localTs === 0 && srvTs === 0) ? mergeLegacyLocal(srv, local) : false;
+
+      if (isLoggedIn && curUid && srv.users.some(u => u.id === curUid)) {
+        srv.currentUserId = curUid;
+      }
+      S = srv;
+      if (merged) S.updatedAt = Date.now();
+      try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (_) {}
+      if (merged) await pushServer();
+      computeRollups();
+      updateBadge();
+      updateUserWidget();
+      if (isLoggedIn) render();
+      return true;
+    } catch (e) {
+      SYNC.ok = false;
+      SYNC.lastError = e.message || 'Không kết nối được máy chủ';
+      console.warn('[KPI sync]', SYNC.lastError);
       return false;
     }
   }
 
-  async function syncFromServer() {
-    try {
-      const res = await fetch('api.php?_t=' + Date.now(), { cache: 'no-store' });
-      if (!res.ok) return false;
-      const data = await res.json();
-      if (data && valid(data)) {
-        const localUsers = Array.isArray(S?.users) ? S.users : [];
-        const localEmps = Array.isArray(S?.emps) ? S.emps : [];
-        const localDepts = Array.isArray(S?.depts) ? S.depts : [];
-        const curUid = S?.currentUserId;
-        const srv = normalize(data);
-
-        // Nếu trình duyệt hiện tại (ví dụ máy Admin) đã tạo các tài khoản / nhân sự / phòng ban trong localStorage mà trên server chưa có thì tự động gộp và đồng bộ lên server
-        let merged = false;
-        localDepts.forEach(ld => {
-          if (ld.id && !srv.depts.some(sd => sd.id === ld.id)) {
-            srv.depts.push(ld);
-            merged = true;
-          }
-        });
-        localUsers.forEach(lu => {
-          if (lu.email && !srv.users.some(su => (su.email || '').toLowerCase() === lu.email.toLowerCase())) {
-            srv.users.push(lu);
-            merged = true;
-          }
-        });
-        localEmps.forEach(le => {
-          if (le.name && !srv.emps.some(se => se.id === le.id || (se.name || '').toLowerCase() === le.name.toLowerCase())) {
-            srv.emps.push(le);
-            merged = true;
-          }
-        });
-
-        if (isLoggedIn && curUid && srv.users.some(u => u.id === curUid)) {
-          srv.currentUserId = curUid;
-        }
-        S = srv;
-        try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (_) {}
-        if (merged) {
-          await pushServer();
-        }
-        computeRollups();
-        updateBadge();
-        updateUserWidget();
-        if (isLoggedIn) render();
-        return true;
-      } else if (data && data.empty) {
-        await pushServer();
-        return true;
-      }
-    } catch (_) { /* ignore when offline or file:// */ }
-    return false;
-  }
-
   function save(syncRemote = true) {
+    if (syncRemote) S.updatedAt = Date.now();
     try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (e) { toast('Không lưu được dữ liệu vào trình duyệt', true); }
     if (syncRemote) pushServer();
     updateBadge();
@@ -250,9 +365,29 @@
     };
   }
   const roleOf = u => ROLES[u?.role] || ROLES.staff;
+  const roleLevel = r => ROLES[r]?.level || 1;
   const isAdm = () => curUser().role === 'admin';
   const isMgr = (deptId) => isAdm() || (curUser().role === 'manager' && (!deptId || curUser().deptId === deptId));
   const isStaff = () => curUser().role === 'staff';
+
+  function isSelfEmp(u, e) {
+    if (!u || !e) return false;
+    if (u.empId && u.empId === e.id) return true;
+    if (u.name && e.name && u.name.trim().toLowerCase() === e.name.trim().toLowerCase()) return true;
+    return false;
+  }
+
+  // Kiểm tra nhân sự e có phải là cấp dưới trực thuộc của tài khoản u hay không
+  // Nguyên tắc: Chỉ quản lý nhân sự thuộc cùng bộ phận và có cấp bậc (level) thấp hơn mình; tuyệt đối không set KPI cho cấp trên hoặc ngang cấp.
+  function isSubordinateEmp(u, e) {
+    if (!u || !e) return false;
+    if (isSelfEmp(u, e)) return false;
+    if (u.role === 'admin') return true;
+    if (!u.deptId || e.deptId !== u.deptId) return false;
+    const myLvl = roleLevel(u.role);
+    const empLvl = roleLevel(e.role || 'staff');
+    return empLvl < myLvl;
+  }
 
   function getVisibleDepts() {
     const u = curUser();
@@ -264,24 +399,21 @@
   function getVisibleEmps() {
     const u = curUser();
     if (u.role === 'admin') return S.emps;
-    if (u.role === 'manager') return S.emps.filter(e => e.deptId === u.deptId);
-    if (u.role === 'leader') return S.emps.filter(e => e.deptId === u.deptId);
-    if (u.role === 'staff') return S.emps.filter(e => e.id === u.empId);
-    return [];
+    return S.emps.filter(e => isSelfEmp(u, e) || isSubordinateEmp(u, e));
   }
 
   function canManageIid() { return isAdm(); }
-  function canManageDept(deptId) { return isAdm() || (curUser().role === 'manager' && curUser().deptId === deptId); }
+  function canManageDept(deptId) { return isAdm() || (curUser().role === 'manager' && Boolean(deptId) && curUser().deptId === deptId); }
   function canManageEmp(empId) {
-    if (isAdm()) return true;
+    const u = curUser();
+    if (u.role === 'admin') return true;
     const e = empById(empId);
     if (!e) return false;
-    if (curUser().role === 'manager' && curUser().deptId === e.deptId) return true;
-    if (curUser().role === 'leader' && curUser().deptId === e.deptId) return true;
-    return curUser().empId === empId;
+    // Nhân sự chỉ được set KPI cho bản thân và cấp dưới trực thuộc (không được set KPI cho cấp trên)
+    return isSelfEmp(u, e) || isSubordinateEmp(u, e);
   }
   function canEditKpi(scope, eid) {
-    if (scope === 'iid') return isAdm();
+    if (scope === 'iid') return canManageIid();
     if (scope === 'dept') return canManageDept(eid);
     return canManageEmp(eid);
   }
@@ -293,28 +425,21 @@
   function canInputMonthly(scope, eid, kid) {
     const k = container(scope, eid)?.find(x => x.id === kid);
     if (k && k.rollupMode && k.rollupMode !== 'manual') return false;
-    if (scope === 'iid') return isAdm();
-    if (scope === 'dept') return canManageDept(eid);
-    if (scope === 'emp') {
-      if (isAdm()) return true;
-      const e = empById(eid);
-      if (!e) return false;
-      if (curUser().empId === eid) return true;
-      if (curUser().role === 'manager' && curUser().deptId === e.deptId) return true;
-      if (curUser().role === 'leader' && curUser().deptId === e.deptId) return true;
-    }
-    return false;
+    return canEditKpi(scope, eid);
   }
   function canReviewSelf(type, eid) {
-    if (isAdm()) return true;
-    if (type === 'dept') return curUser().role === 'manager' && curUser().deptId === eid;
-    return curUser().empId === eid || (curUser().role === 'manager' && deptById(empById(eid)?.deptId)?.id === curUser().deptId);
+    const u = curUser();
+    if (u.role === 'admin') return true;
+    if (type === 'dept') return u.role === 'manager' && u.deptId === eid;
+    const e = empById(eid);
+    return isSelfEmp(u, e) || isSubordinateEmp(u, e);
   }
   function canReviewMgr(type, eid) {
-    if (isAdm()) return true;
+    const u = curUser();
+    if (u.role === 'admin') return true;
     if (type === 'emp') {
       const e = empById(eid);
-      return curUser().role === 'manager' && curUser().deptId === e?.deptId;
+      return isSubordinateEmp(u, e);
     }
     return false;
   }
@@ -621,19 +746,21 @@
   function updateUserWidget() {
     const u = curUser();
     const r = roleOf(u);
+    const d = deptById(u.deptId);
+    const deptBadge = d ? ` <span class="tag dept" style="font-size:10px;padding:1px 6px">${esc(d.name)}</span>` : '';
     const topName = $('#current-user-name');
     if (topName) topName.textContent = u.name;
     const topAvatar = $('#current-user-avatar');
     if (topAvatar) topAvatar.textContent = userInitials(u);
     const topRole = $('#current-user-role');
-    if (topRole) topRole.innerHTML = `<span class="role-pill ${r.id}">${r.badge}</span>`;
+    if (topRole) topRole.innerHTML = `<span class="role-pill ${r.id}">${r.badge}</span>${deptBadge}`;
 
     const sbName = $('#sidebar-user-name');
     if (sbName) sbName.textContent = u.name;
     const sbAvatar = $('#sidebar-user-avatar');
     if (sbAvatar) sbAvatar.textContent = userInitials(u);
     const sbRole = $('#sidebar-user-role');
-    if (sbRole) sbRole.innerHTML = `<span class="role-pill ${r.id}">${r.badge}</span>`;
+    if (sbRole) sbRole.innerHTML = `<span class="role-pill ${r.id}">${r.badge}</span>${deptBadge}`;
 
     const show = (sel, on) => { const el = $(sel); if (el) el.style.display = on ? '' : 'none'; };
     show('#nav-users', isAdm());
@@ -904,8 +1031,8 @@
       };
       const curRoleInfo = roleMap[u.role] || roleMap.staff;
 
-      const deptMembers = (u.role === 'manager' || u.role === 'leader') && myDept
-        ? S.emps.filter(e => e.deptId === myDept.id)
+      const deptMembers = (u.role === 'manager' || u.role === 'leader')
+        ? getVisibleEmps()
         : [];
       const empRows = deptMembers.map(e => ({ e, s: empScore(e, ...P) })).sort((a, b) => b.s - a.s);
 
@@ -1289,12 +1416,13 @@
         { title: 'Nhận từ KPI Tổng IID', cls: 'iid', tag: 'IID', items: items.filter(i => i.kind === 'iid').map(i => ({ ...i, actions: canManage ? `<button class="icon-btn" title="Sửa liên kết" data-action="dept-links" data-eid="${d.id}">⚙</button>` : '' })) },
         { title: 'KPI riêng của bộ phận', cls: 'dept', tag: 'Bộ phận', items: d.kpis.map(k => ({ kind: 'own', kpi: k, weight: k.weight, link: linkName(k.linkTo), actions: kpiActions('dept', d.id, k.id) })) }
       ];
-      const members = S.emps.filter(e => e.deptId === d.id);
+      const members = getVisibleEmps().filter(e => e.deptId === d.id);
+      const totalDeptEmps = S.emps.filter(e => e.deptId === d.id).length;
       detail = `
       <section class="card mt">
         <div class="card-head" style="flex-wrap:wrap">
           ${avatar(deptInitials(d), d.color)}
-          <div><h2 style="font-size:17px">${esc(d.name)}</h2><div class="small muted">Trưởng bộ phận: ${esc(d.leader || '—')} · ${members.length} nhân sự</div></div>
+          <div><h2 style="font-size:17px">${esc(d.name)}</h2><div class="small muted">Trưởng bộ phận: ${esc(d.leader || '—')} · ${totalDeptEmps} nhân sự</div></div>
           <span class="spacer"></span>
           ${canManage ? `
             <button class="btn ghost sm" data-action="edit-dept" data-eid="${d.id}">✎ Sửa BP</button>
@@ -1370,7 +1498,7 @@
           <div><h2 style="font-size:17px">${esc(e.name)}</h2><div class="small muted">${esc(e.title || '—')} · ${esc(d?.name || 'Chưa có bộ phận')} · <span class="role-pill ${e.role || 'staff'}">${ROLES[e.role || 'staff']?.badge}</span></div></div>
           <span class="spacer"></span>
           ${canManage ? `
-            <button class="btn ghost sm" data-action="edit-emp" data-eid="${e.id}">✎ Sửa thông tin</button>
+            ${isAdm() || (curUser().role === 'manager' && isSubordinateEmp(curUser(), e)) ? `<button class="btn ghost sm" data-action="edit-emp" data-eid="${e.id}">✎ Sửa thông tin</button>` : ''}
             <button class="btn ghost sm" data-action="emp-links" data-eid="${e.id}">⚙ Liên kết KPI</button>
             <button class="btn sm" style="background:var(--teal);border-color:var(--teal)" data-action="monthly-kpi-modal" data-scope="emp" data-eid="${e.id}">📅 Set KPI theo tháng</button>
             <button class="btn sm" data-action="add-kpi" data-scope="emp" data-eid="${e.id}">＋ KPI cá nhân</button>
@@ -1433,13 +1561,13 @@
         const d = deptById(u.deptId);
         return d ? { scope: 'dept', eid: d.id, kpis: d.kpis, items: deptItems(d), name: d.name } : null;
       }
-      const myEmps = S.emps.filter(e => e.deptId === u.deptId);
+      const myEmps = getVisibleEmps();
       if (UI.trackEmp === 'all') {
-        return { scope: 'emp_all', eid: 'all', emps: myEmps, kpis: myEmps.flatMap(e => e.kpis), items: myEmps.flatMap(e => empItems(e)), name: `Tất cả nhân sự (${deptById(u.deptId)?.name || 'Phòng ban'})` };
+        return { scope: 'emp_all', eid: 'all', emps: myEmps, kpis: myEmps.flatMap(e => e.kpis), items: myEmps.flatMap(e => empItems(e)), name: `Bản thân & cấp dưới trực thuộc (${myEmps.length} cá nhân)` };
       }
       if (!myEmps.some(e => e.id === UI.trackEmp)) UI.trackEmp = myEmps[0]?.id || 'all';
       if (UI.trackEmp === 'all') {
-        return { scope: 'emp_all', eid: 'all', emps: myEmps, kpis: myEmps.flatMap(e => e.kpis), items: myEmps.flatMap(e => empItems(e)), name: `Tất cả nhân sự` };
+        return { scope: 'emp_all', eid: 'all', emps: myEmps, kpis: myEmps.flatMap(e => e.kpis), items: myEmps.flatMap(e => empItems(e)), name: `Bản thân & cấp dưới trực thuộc` };
       }
       const e = empById(UI.trackEmp);
       return e ? { scope: 'emp', eid: e.id, kpis: e.kpis, items: empItems(e), name: e.name, emp: e } : null;
@@ -1600,9 +1728,9 @@
     if (UI.trackLevel === 'dept' && isAdm()) {
       picker = `<select id="track-entity">${S.depts.map(d => `<option value="${d.id}" ${d.id === UI.trackDept ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select>`;
     } else if (UI.trackLevel === 'emp') {
-      const myEmps = isAdm() ? S.emps : S.emps.filter(e => e.deptId === u.deptId);
+      const myEmps = getVisibleEmps();
       picker = `<select id="track-entity">
-        <option value="all" ${UI.trackEmp === 'all' ? 'selected' : ''}>👥 Tất cả nhân sự (${myEmps.length} cá nhân)</option>
+        <option value="all" ${UI.trackEmp === 'all' ? 'selected' : ''}>👥 Tất cả (${myEmps.length} cá nhân)</option>
         ${myEmps.map(e => `<option value="${e.id}" ${e.id === UI.trackEmp ? 'selected' : ''}>👤 ${esc(e.name)} (${esc(e.title || '')})</option>`).join('')}
       </select>`;
     }
@@ -1625,6 +1753,7 @@
       if (T.scope === 'emp_all') {
         rows = T.emps.map(e => {
           const d = deptById(e.deptId);
+          const canEditEmp = canEditKpi('emp', e.id);
           const empHeader = `<tr class="emp-group-header">
             <td colspan="17">
               <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
@@ -1634,23 +1763,23 @@
                   <span class="muted small">${esc(e.title || '')} · ${esc(d?.name || '')}</span>
                   <span class="tag emp">${e.kpis.length} KPI cá nhân</span>
                 </div>
-                <div class="row" style="gap:6px">
+                ${canEditEmp ? `<div class="row" style="gap:6px">
                   <button type="button" class="btn sm ghost" data-action="monthly-kpi-modal" data-scope="emp" data-eid="${e.id}">📅 Set KPI tháng (${esc(e.name)})</button>
                   <button type="button" class="btn sm ghost" data-action="add-kpi" data-scope="emp" data-eid="${e.id}">＋ Thêm KPI</button>
-                </div>
+                </div>` : '<span class="tag">Chế độ xem</span>'}
               </div>
             </td>
           </tr>`;
           const kpiRows = e.kpis.length
             ? e.kpis.map(k => renderTrackKpiRow(k, 'emp', e.id, mode)).join('')
-            : `<tr><td colspan="17" class="muted small" style="padding:10px 16px">Nhân sự này chưa có KPI riêng. Bấm <b>＋ Thêm KPI</b> để thiết lập KPI cho ${esc(e.name)}.</td></tr>`;
+            : `<tr><td colspan="17" class="muted small" style="padding:10px 16px">Nhân sự này chưa có KPI riêng.${canEditEmp ? ` Bấm <b>＋ Thêm KPI</b> để thiết lập KPI cho ${esc(e.name)}.` : ''}</td></tr>`;
           return empHeader + kpiRows;
         }).join('');
       } else {
         rows = T.kpis.map(k => renderTrackKpiRow(k, T.scope, T.eid, mode)).join('');
       }
 
-      const headerActionBtn = T.scope !== 'emp_all'
+      const headerActionBtn = (T.scope !== 'emp_all' && canEditKpi(T.scope, T.eid))
         ? `<button class="btn sm" style="background:var(--teal);border-color:var(--teal)" data-action="monthly-kpi-modal" data-scope="${T.scope}" data-eid="${T.eid}">📅 Mở cửa sổ Set KPI tháng</button>`
         : '';
 
@@ -1697,6 +1826,11 @@
     const { scope, eid, kid, m } = inp.dataset;
     const k = container(scope, eid)?.find(x => x.id === kid);
     if (!k) return;
+    if (!canEditKpi(scope, eid)) {
+      toast('Bạn chỉ được phép thiết lập / nhập KPI cho bản thân và cấp dưới trực thuộc!', true);
+      render();
+      return;
+    }
     const raw = inp.value.trim().replace(/\s/g, '').replace(',', '.');
     const v = raw === '' ? null : Number(raw);
     if (raw !== '' && isNaN(v)) { inp.classList.add('invalid'); toast('Giá trị không hợp lệ – vui lòng nhập số', true); return; }
@@ -1754,13 +1888,14 @@
     const u = curUser();
 
     let ents = [];
-    if (u.role === 'staff') {
-      const e = empById(u.empId);
-      if (e) ents = [{ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: prevQ ? empScore(e, prevQ.from, prevQ.to) : null }];
+    if (u.role === 'staff' || u.role === 'leader') {
+      getVisibleEmps().forEach(e => {
+        ents.push({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: prevQ ? empScore(e, prevQ.from, prevQ.to) : null });
+      });
     } else if (u.role === 'manager') {
       const d = deptById(u.deptId);
       if (d) ents.push({ type: 'dept', id: d.id, name: d.name, sub: 'Trưởng BP: ' + (d.leader || '—'), av: avatar(deptInitials(d), d.color, 34), score: started ? deptScore(d, ...R) : null, prev: prevQ ? deptScore(d, prevQ.from, prevQ.to) : null });
-      S.emps.filter(e => e.deptId === u.deptId).forEach(e => {
+      getVisibleEmps().forEach(e => {
         ents.push({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: prevQ ? empScore(e, prevQ.from, prevQ.to) : null });
       });
     } else {
@@ -2178,21 +2313,34 @@
     }
   }
 
-  function findUserByEmailInput(rawEmail) {
-    if (!rawEmail) return null;
-    const clean = rawEmail.replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase();
-    let u = S.users.find(x => String(x.email || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase() === clean);
-    if (!u && !clean.includes('@')) {
-      const matches = S.users.filter(x => String(x.email || '').toLowerCase().split('@')[0] === clean);
-      if (matches.length === 1) u = matches[0];
+  const cleanPwdStr = p => String(p ?? '').replace(/[\u200B-\u200D\uFEFF\r\n]/g, '').trim();
+
+  function findUsersByEmailInput(rawEmail) {
+    if (!rawEmail) return [];
+    const norm = s => String(s || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase();
+    const clean = norm(rawEmail);
+    let list = S.users.filter(x => norm(x.email) === clean);
+    if (!list.length && !clean.includes('@')) {
+      // Cho phép nhập phần trước @ nếu chỉ có duy nhất 1 tài khoản khớp
+      const matches = S.users.filter(x => norm(x.email).split('@')[0] === clean);
+      if (matches.length === 1) list = matches;
     }
-    return u || null;
+    return list;
   }
 
+  function setLoginBusy(busy) {
+    const btn = $('#btn-do-login');
+    if (!btn) return;
+    btn.disabled = busy;
+    btn.textContent = busy ? 'Đang kiểm tra...' : 'Đăng nhập';
+  }
+
+  let loginInFlight = false;
   async function handleLogin(email, password) {
+    if (loginInFlight) return false;
     setLoginError('');
     const cleanEmail = String(email || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase();
-    const cleanPwd = String(password || '').replace(/[\u200B-\u200D\uFEFF\r\n]/g, '').trim();
+    const cleanPwd = cleanPwdStr(password);
 
     if (!cleanEmail || !cleanPwd) {
       const msg = '⚠️ Vui lòng nhập đầy đủ Email công việc và Mật khẩu!';
@@ -2201,24 +2349,29 @@
       return false;
     }
 
-    let u = findUserByEmailInput(cleanEmail);
-    let storedPwd = u ? String(u.password || '').replace(/[\u200B-\u200D\uFEFF\r\n]/g, '').trim() : '';
-
-    // Nếu không tìm thấy tài khoản hoặc mật khẩu chưa khớp ở bộ nhớ cục bộ, tự động đồng bộ danh sách tài khoản mới nhất từ Server về
-    if (!u || storedPwd !== cleanPwd) {
-      await syncFromServer();
-      u = findUserByEmailInput(cleanEmail);
-      storedPwd = u ? String(u.password || '').replace(/[\u200B-\u200D\uFEFF\r\n]/g, '').trim() : '';
+    loginInFlight = true;
+    setLoginBusy(true);
+    let serverOk = false;
+    try {
+      // Luôn lấy danh sách tài khoản mới nhất từ Server trước khi xác thực
+      serverOk = await syncFromServer({ force: true });
+    } finally {
+      loginInFlight = false;
+      setLoginBusy(false);
     }
 
-    if (!u) {
-      const msg = `❌ Email "${String(email || '').trim()}" không tồn tại trong hệ thống! Hãy kiểm tra lại chính tả hoặc liên hệ Admin.`;
+    const candidates = findUsersByEmailInput(cleanEmail);
+    const u = candidates.find(x => cleanPwdStr(x.password) === cleanPwd) || null;
+    const serverNote = serverOk ? '' : ` (Không kết nối được dữ liệu trên Server: ${SYNC.lastError || 'lỗi không xác định'}. Tài khoản do Admin tạo trên máy khác sẽ chưa có ở trình duyệt này.)`;
+
+    if (!candidates.length) {
+      const msg = `❌ Email "${String(email || '').trim()}" không tồn tại trong hệ thống! Hãy kiểm tra lại chính tả hoặc liên hệ Admin.${serverNote}`;
       setLoginError(msg);
       toast('Email không tồn tại trong hệ thống!', true);
       return false;
     }
-    if (storedPwd !== cleanPwd) {
-      const msg = '❌ Mật khẩu không chính xác! Vui lòng kiểm tra lại (chữ hoa/thường hoặc khoảng trắng thừa).';
+    if (!u) {
+      const msg = `❌ Mật khẩu không chính xác! Vui lòng kiểm tra lại (phân biệt chữ hoa/thường).${serverNote}`;
       setLoginError(msg);
       toast('Mật khẩu không chính xác! Vui lòng thử lại.', true);
       return false;
@@ -2235,13 +2388,17 @@
 
     try { localStorage.removeItem(ADMIN_ORIGIN_KEY); } catch (_) {}
     isLoggedIn = true;
+    SYNC.warned = false;
     document.body.classList.remove('auth-locked');
     S.currentUserId = u.id;
     UI.selDept = u.deptId || null;
     UI.selEmp = u.empId || null;
-    save();
+    save(false); // Đăng nhập chỉ lưu phiên cục bộ, không ghi đè dữ liệu chung trên Server
     hideLoginOverlay();
     render(true);
+    if (!serverOk && isAdm()) {
+      toast(`⚠️ Không kết nối được Server: ${SYNC.lastError}. Các thay đổi chỉ lưu trên trình duyệt này!`, true);
+    }
     toast(`✅ Đăng nhập thành công! Xin chào ${u.name}`);
     return true;
   }
@@ -2295,35 +2452,95 @@
       </select>`, true)}
     `, fd => {
       const v = Object.fromEntries(fd);
-      if (!v.name.trim() || !v.email.trim() || !v.password.trim()) {
+      const name = String(v.name || '').trim();
+      const email = String(v.email || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase();
+      const password = cleanPwdStr(v.password);
+      if (!name || !email || !password) {
         toast('Vui lòng điền đầy đủ Họ tên, Email và Mật khẩu!', true);
         return false;
       }
-      if (old) {
-        Object.assign(old, {
-          name: v.name.trim(), email: v.email.trim(), password: v.password.trim(),
-          role: v.role, title: v.title.trim(), deptId: v.deptId || null
-        });
-      } else {
-        const nu = {
-          id: uid('u'), name: v.name.trim(), email: v.email.trim(), password: v.password.trim(),
-          role: v.role, title: v.title.trim(), deptId: v.deptId || null, empId: null
-        };
-        S.users.push(nu);
-        // Nếu tạo tài khoản nhân sự và chưa có trong S.emps thì tự động gắn hồ sơ nhân sự để set KPI cá nhân
-        if (nu.role !== 'admin') {
-          let e = S.emps.find(x => x.name.toLowerCase() === nu.name.toLowerCase());
-          if (!e) {
-            e = {
-              id: uid('e'), name: nu.name, title: nu.title, role: nu.role,
-              deptId: nu.deptId || S.depts[0]?.id, iidLinks: [], deptLinks: [], kpis: []
-            };
-            S.emps.push(e);
-          }
-          nu.empId = e.id;
-        }
+      if (!email.includes('@')) {
+        toast('Email không hợp lệ!', true);
+        return false;
       }
-      save(); render(); toast(old ? 'Đã cập nhật tài khoản!' : 'Đã cấp tài khoản & khởi tạo hồ sơ KPI cá nhân!');
+      // Luôn lấy lại bản ghi theo id từ dữ liệu hiện hành (tránh sửa nhầm bản ghi cũ nếu dữ liệu vừa được đồng bộ)
+      const target = old ? S.users.find(x => x.id === uidToEdit) : null;
+      if (old && !target) {
+        toast('Tài khoản không còn tồn tại (có thể đã bị xóa ở máy khác). Vui lòng tải lại trang.', true);
+        return false;
+      }
+      const dup = S.users.find(x => String(x.email || '').toLowerCase() === email && x.id !== target?.id);
+      if (dup) {
+        toast(`Email ${email} đã được dùng cho tài khoản "${dup.name}"!`, true);
+        return false;
+      }
+      const patch = { name, email, password, role: v.role, title: String(v.title || '').trim(), deptId: v.deptId || null };
+      let acc;
+      if (target) {
+        Object.assign(target, patch);
+        acc = target;
+      } else {
+        acc = Object.assign({ id: uid('u'), empId: null }, patch);
+        S.users.push(acc);
+      }
+      // Đồng bộ hồ sơ nhân sự (bộ phận, vai trò, chức danh) để KPI cá nhân & phân quyền ghi nhận ngay
+      const moved = linkUserToEmp(acc);
+      if (acc.id === S.currentUserId) {
+        UI.selDept = acc.deptId || null;
+        if (acc.empId) UI.selEmp = acc.empId;
+      }
+      computeRollups();
+      save(); render();
+      const deptName = acc.deptId ? (deptById(acc.deptId)?.name || '') : 'Toàn Khối IID';
+      toast(target
+        ? `✅ Đã cập nhật tài khoản "${acc.name}" (Đơn vị: ${deptName})!`
+        : '✅ Đã cấp tài khoản & khởi tạo hồ sơ KPI cá nhân!');
+    });
+  }
+
+  /* ---------- Liên kết Tài khoản ↔ Hồ sơ nhân sự ----------
+     Trả về true nếu nhân sự được chuyển sang bộ phận khác. */
+  function linkUserToEmp(u) {
+    if (!u) return false;
+    let e = u.empId ? empById(u.empId) : null;
+    if (!e) {
+      e = S.emps.find(x => !S.users.some(o => o !== u && o.empId === x.id) && String(x.name || '').toLowerCase() === String(u.name || '').toLowerCase()) || null;
+    }
+    // Nếu là tài khoản Admin toàn khối (không gán bộ phận riêng) và chưa có hồ sơ nhân sự thì không tự sinh hồ sơ nhân sự rỗng
+    if (!e && u.role === 'admin' && !u.deptId) return false;
+    if (!e) {
+      e = { id: uid('e'), name: u.name, title: u.title, role: u.role, deptId: u.deptId || null, iidLinks: [], deptLinks: [], kpis: [] };
+      S.emps.push(e);
+    }
+    u.empId = e.id;
+    let moved = false;
+    const nextDeptId = u.deptId || null;
+    if (e.deptId !== nextDeptId) {
+      // Đổi bộ phận: gỡ liên kết KPI của bộ phận cũ (giống thao tác Sửa nhân sự)
+      e.deptLinks = [];
+      (e.kpis || []).forEach(k => { k.linkTo = null; });
+      e.deptId = nextDeptId;
+      moved = true;
+    }
+    e.name = u.name;
+    e.title = u.title;
+    e.role = u.role;
+    if (u.role === 'manager' && nextDeptId) {
+      const d = deptById(nextDeptId);
+      if (d) d.leader = u.name;
+    }
+    return moved;
+  }
+
+  // Chiều ngược lại: sửa hồ sơ nhân sự → cập nhật tài khoản đăng nhập liên kết
+  function syncUsersFromEmp(e) {
+    if (!e) return;
+    S.users.filter(u => u.empId === e.id || String(u.name || '').toLowerCase() === String(e.name || '').toLowerCase()).forEach(u => {
+      u.empId = e.id;
+      u.deptId = e.deptId || null;
+      u.name = e.name;
+      u.title = e.title;
+      if (u.role !== 'admin') u.role = e.role || u.role;
     });
   }
 
@@ -2588,11 +2805,11 @@
 
       let createdN = 0, updatedN = 0;
       validItems.forEach(item => {
-        let u = S.users.find(x => x.email.toLowerCase() === item.email.toLowerCase());
+        let u = S.users.find(x => String(x.email || '').toLowerCase() === item.email.toLowerCase());
         if (u) {
           u.name = item.name;
           u.title = item.title || u.title;
-          u.role = item.role;
+          if (u.role !== 'admin' || item.role === 'admin') u.role = item.role;
           if (item.deptId) u.deptId = item.deptId;
           if (item.password) u.password = item.password;
           updatedN++;
@@ -2610,32 +2827,10 @@
           S.users.push(u);
           createdN++;
         }
-
-        let e = null;
-        if (u.empId) e = empById(u.empId);
-        if (!e) e = S.emps.find(x => x.name.toLowerCase() === item.name.toLowerCase());
-
-        if (e) {
-          e.title = item.title || e.title;
-          e.role = item.role;
-          if (item.deptId) e.deptId = item.deptId;
-          u.empId = e.id;
-        } else {
-          const ne = {
-            id: uid('e'),
-            name: item.name,
-            title: item.title,
-            role: item.role,
-            deptId: item.deptId || S.depts[0]?.id,
-            iidLinks: [],
-            deptLinks: [],
-            kpis: []
-          };
-          S.emps.push(ne);
-          u.empId = ne.id;
-        }
+        linkUserToEmp(u);
       });
 
+      computeRollups();
       save();
       render();
       toast(`✅ Đã import thành công: ${createdN} tài khoản mới, cập nhật ${updatedN} tài khoản!`);
@@ -2674,6 +2869,10 @@
 
   /* ---------- Modal Thêm/Sửa KPI (Có Thiết lập KPI theo từng tháng) ---------- */
   function kpiModal(scope, eid, kid) {
+    if (!canEditKpi(scope, eid)) {
+      toast('Bạn chỉ được phép thiết lập KPI cho bản thân và cấp dưới trực thuộc (không được set KPI cho cấp trên)!', true);
+      return;
+    }
     const list = container(scope, eid);
     if (!list) return;
     const old = kid ? list.find(k => k.id === kid) : null;
@@ -3137,6 +3336,10 @@
   }
 
   function deleteKpi(scope, eid, kid) {
+    if (!canEditKpi(scope, eid)) {
+      toast('Bạn không có quyền xóa KPI của cấp trên hoặc đơn vị khác!', true);
+      return;
+    }
     const list = container(scope, eid);
     const idx = list?.findIndex(k => k.id === kid);
     if (idx === undefined || idx < 0) return;
@@ -3171,6 +3374,10 @@
   };
 
   function deptLinksModal(id) {
+    if (!canManageDept(id)) {
+      toast('Chỉ Admin hoặc Trưởng bộ phận (Manager) mới được thiết lập liên kết KPI cho Bộ phận!', true);
+      return;
+    }
     const d = deptById(id); if (!d) return;
     const own = sum(d.kpis.map(k => k.weight));
     openModal(`⚙ Liên kết KPI IID – ${d.name}`, `
@@ -3188,6 +3395,10 @@
   }
 
   function empLinksModal(id) {
+    if (!canManageEmp(id)) {
+      toast('Bạn chỉ được thiết lập liên kết KPI cho bản thân và cấp dưới trực thuộc!', true);
+      return;
+    }
     const e = empById(id); if (!e) return;
     const d = deptById(e.deptId);
     const own = sum(e.kpis.map(k => k.weight));
@@ -3245,15 +3456,18 @@
       const v = Object.fromEntries(fd);
       if (!v.name.trim()) { toast('Vui lòng nhập họ tên', true); return false; }
       if (old) {
-        if (old.deptId !== v.deptId) {
-          old.deptLinks = [];
-          old.kpis.forEach(k => { k.linkTo = null; });
+        const target = empById(old.id) || old;
+        if (target.deptId !== v.deptId) {
+          target.deptLinks = [];
+          target.kpis.forEach(k => { k.linkTo = null; });
         }
-        Object.assign(old, { name: v.name.trim(), title: v.title.trim(), role: v.role, deptId: v.deptId });
+        Object.assign(target, { name: v.name.trim(), title: v.title.trim(), role: v.role, deptId: v.deptId });
+        syncUsersFromEmp(target);
       } else {
         const ne = { id: uid('e'), name: v.name.trim(), title: v.title.trim(), role: v.role, deptId: v.deptId, iidLinks: [], deptLinks: [], kpis: [] };
         S.emps.push(ne); UI.selEmp = ne.id;
       }
+      computeRollups();
       save(); render(); toast(old ? 'Đã cập nhật nhân sự' : 'Đã thêm nhân sự');
     });
   }
@@ -3564,9 +3778,11 @@
       case 'import-users-modal': importUsersModal(); break;
       case 'download-user-template': downloadUserTemplate(); break;
       case 'sync-server': {
-        pushServer().then(ok => {
-          if (ok) toast(`✅ Đã đồng bộ ${S.users.length} tài khoản & dữ liệu KPI lên Server!`);
-          else toast('⚠️ Không thể kết nối api.php trên Server', true);
+        S.updatedAt = Date.now();
+        try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (_) {}
+        pushServer().then(r => {
+          if (r.ok) toast(`✅ Đã đồng bộ ${S.users.length} tài khoản & dữ liệu KPI lên Server!`);
+          else toast(`⚠️ Đồng bộ thất bại: ${r.error}`, true);
         });
         break;
       }
@@ -3598,6 +3814,7 @@
         navigate('tracking');
         break;
       case 'distribute-kpi-target': {
+        if (!canEditKpi(ds.scope, ds.eid)) { toast('Bạn không có quyền sửa chỉ tiêu KPI này!', true); break; }
         const k = container(ds.scope, ds.eid)?.find(x => x.id === ds.kid);
         if (!k) break;
         const def = defaultMonthTarget(k);
@@ -3608,6 +3825,7 @@
         break;
       }
       case 'sum-kpi-target': {
+        if (!canEditKpi(ds.scope, ds.eid)) { toast('Bạn không có quyền sửa chỉ tiêu KPI này!', true); break; }
         const k = container(ds.scope, ds.eid)?.find(x => x.id === ds.kid);
         if (!k) break;
         const vals27 = (k.monthlyTargets || []).slice(1, 13).filter(isNum).map(Number);
@@ -3739,4 +3957,7 @@
   render(true);
   showLoginOverlay();
   syncFromServer();
+  // Định kỳ lấy dữ liệu mới nhất từ Server (khi không đang chỉnh sửa) để các máy luôn thấy thay đổi của nhau
+  setInterval(() => { if (document.visibilityState === 'visible') syncFromServer(); }, 30000);
+  window.addEventListener('focus', () => syncFromServer());
 })();

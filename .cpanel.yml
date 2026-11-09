@@ -2,10 +2,13 @@
 deployment:
   tasks:
     - export DEPLOYPATH=/home/$USER/public_html/
+    - /bin/mkdir -p $DEPLOYPATH/data
+    - /bin/chmod 775 $DEPLOYPATH/data
     - /bin/cp -f index.html $DEPLOYPATH
     - /bin/cp -f index.php $DEPLOYPATH
     - /bin/cp -f api.php $DEPLOYPATH
     - /bin/cp -f .htaccess $DEPLOYPATH
+    - /bin/cp -f data/.htaccess $DEPLOYPATH/data/
     - /bin/cp -Rf css $DEPLOYPATH
     - /bin/cp -Rf js $DEPLOYPATH
     - /bin/cp -Rf assets $DEPLOYPATH

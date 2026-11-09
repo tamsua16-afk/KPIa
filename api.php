@@ -10,29 +10,42 @@ header('Pragma: no-cache');
 $dataDir = __DIR__ . '/data';
 $storeFile = $dataDir . '/kpi_store.json';
 $fallbackFile = __DIR__ . '/kpi_store.json';
+$tempFile = rtrim(sys_get_temp_dir(), '/\\') . '/tenten_kpi_2027_' . md5(__DIR__) . '.json';
 
 if (!is_dir($dataDir)) {
-  @mkdir($dataDir, 0755, true);
+  @mkdir($dataDir, 0775, true);
 }
 if (is_dir($dataDir) && is_writable($dataDir)) {
   $htaccessFile = $dataDir . '/.htaccess';
   if (!file_exists($htaccessFile)) {
     @file_put_contents($htaccessFile, "<IfModule mod_authz_core.c>\n  Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n  Order deny,allow\n  Deny from all\n</IfModule>\n");
   }
-} else {
-  $storeFile = $fallbackFile;
 }
 
+$candidates = [$storeFile, $fallbackFile, $tempFile];
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($method === 'GET') {
-  $target = file_exists($storeFile) ? $storeFile : (file_exists($fallbackFile) ? $fallbackFile : null);
-  if ($target && is_readable($target)) {
-    $raw = @file_get_contents($target);
-    if ($raw !== false && strlen(trim($raw)) > 2) {
-      echo $raw;
-      exit;
+  $bestRaw = null;
+  $bestTs = -1;
+  foreach ($candidates as $file) {
+    if ($file && file_exists($file) && is_readable($file)) {
+      $raw = @file_get_contents($file);
+      if ($raw !== false && strlen(trim($raw)) > 2) {
+        $dec = @json_decode($raw, true);
+        if (is_array($dec) && isset($dec['iid'])) {
+          $ts = isset($dec['updatedAt']) ? (float)$dec['updatedAt'] : (float)@filemtime($file);
+          if ($ts >= $bestTs) {
+            $bestTs = $ts;
+            $bestRaw = $raw;
+          }
+        }
+      }
     }
+  }
+  if ($bestRaw !== null) {
+    echo $bestRaw;
+    exit;
   }
   echo json_encode(['empty' => true]);
   exit;
@@ -40,6 +53,9 @@ if ($method === 'GET') {
 
 if ($method === 'POST') {
   $raw = file_get_contents('php://input');
+  if ((!$raw || !strlen(trim($raw))) && isset($_POST['payload'])) {
+    $raw = $_POST['payload'];
+  }
   if (!$raw) {
     http_response_code(400);
     echo json_encode(['ok' => false, 'error' => 'Empty request body']);
@@ -52,9 +68,13 @@ if ($method === 'POST') {
     exit;
   }
 
-  $written = @file_put_contents($storeFile, $raw, LOCK_EX);
-  if ($written === false && $storeFile !== $fallbackFile) {
-    $written = @file_put_contents($fallbackFile, $raw, LOCK_EX);
+  $written = false;
+  foreach ($candidates as $file) {
+    $w = @file_put_contents($file, $raw, LOCK_EX);
+    if ($w !== false) {
+      $written = $w;
+      break;
+    }
   }
 
   if ($written === false) {
