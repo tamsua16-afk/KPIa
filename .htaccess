@@ -1,10 +1,16 @@
-DirectoryIndex index.html index.php
-Options -Indexes +FollowSymLinks
+<IfModule mod_dir.c>
+  DirectoryIndex index.html index.php
+</IfModule>
 
 <IfModule mod_rewrite.c>
   RewriteEngine On
-  RewriteBase /
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d
-  RewriteRule . /index.html [L]
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+  <FilesMatch "\.(html|htm|js|css|json)$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
 </IfModule>
