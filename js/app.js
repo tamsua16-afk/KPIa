@@ -19,6 +19,8 @@
   const ADMIN_ORIGIN_KEY = 'kpi2027_admin_origin';
   const AUTH_SESSION_KEY = 'kpi2027_auth_session_v1';
   const PREVIEW_SESSION_KEY = 'kpi2027_preview_uid_v1';
+  const UI_PREFS_KEY = 'kpi2027_ui_prefs_v1';
+  const DIRTY_KEY = 'kpi2027_dirty_v1';
   const REVIEW_STATUS = [
     ['todo', 'Chưa bắt đầu', ''],
     ['self', 'Đã tự đánh giá', 'warn'],
@@ -48,7 +50,7 @@
   const UI = {
     view: 'dashboard', selDept: null, selEmp: null, empFilter: 'all',
     trackLevel: 'emp', trackMode: 'actual', trackDept: null, trackEmp: 'all',
-    reviewQ: null, reviewFilter: 'all'
+    reviewMode: 'month', reviewM: null, reviewQ: null, reviewFilter: 'all'
   };
 
   function defaultMonthTarget(k) {
@@ -90,6 +92,12 @@
     const isLegacy12 = (d.version || 5) < 6;
     d.version = 6;
     d.reviews = d.reviews || {};
+    d.deleted = {
+      kpis: { ...(d.deleted?.kpis || {}) },
+      depts: { ...(d.deleted?.depts || {}) },
+      emps: { ...(d.deleted?.emps || {}) },
+      users: { ...(d.deleted?.users || {}) }
+    };
 
     if (isLegacy12) {
       d.currentMonth = 0;
@@ -193,6 +201,68 @@
     return false;
   }
 
+  function loadUiPrefs() {
+    try {
+      const raw = localStorage.getItem(UI_PREFS_KEY);
+      if (!raw) return null;
+      const p = JSON.parse(raw);
+      if (!p || typeof p !== 'object') return null;
+      const months = Array.isArray(p.selectedMonths)
+        ? p.selectedMonths.filter(isNum).map(Number).filter(m => m >= 0 && m < MONTHS.length).sort((a, b) => a - b)
+        : [];
+      const cur = isNum(p.currentMonth) ? clamp(+p.currentMonth, 0, MONTHS.length - 1) : (months.length ? Math.max(...months) : null);
+      return {
+        currentMonth: cur,
+        selectedMonths: months.length ? months : (cur !== null ? [cur] : null)
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function applyUiPrefs(d) {
+    const prefs = loadUiPrefs();
+    if (!prefs || !d) return d;
+    if (Array.isArray(prefs.selectedMonths) && prefs.selectedMonths.length) {
+      d.selectedMonths = prefs.selectedMonths.slice();
+    }
+    if (isNum(prefs.currentMonth)) {
+      d.currentMonth = clamp(+prefs.currentMonth, 0, MONTHS.length - 1);
+    }
+    return d;
+  }
+
+  function saveUiPrefs() {
+    try {
+      localStorage.setItem(UI_PREFS_KEY, JSON.stringify({
+        currentMonth: S.currentMonth,
+        selectedMonths: S.selectedMonths
+      }));
+    } catch (_) {}
+    try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (_) {}
+    updateBadge();
+    updateUserWidget();
+  }
+
+  function isDirty() {
+    try { return localStorage.getItem(DIRTY_KEY) === '1'; } catch (_) { return false; }
+  }
+
+  function setDirty(flag) {
+    SYNC.dirty = Boolean(flag);
+    try {
+      if (flag) localStorage.setItem(DIRTY_KEY, '1');
+      else localStorage.removeItem(DIRTY_KEY);
+    } catch (_) {}
+  }
+
+  function markDeleted(bucket, id, ts = Date.now()) {
+    if (!id) return;
+    if (!S.deleted) S.deleted = { kpis: {}, depts: {}, emps: {}, users: {} };
+    if (!S.deleted[bucket]) S.deleted[bucket] = {};
+    S.deleted[bucket][id] = ts;
+  }
+
   function load() {
     try {
       ['kpi2027_iid_v4', 'kpi2027_iid_v3', 'kpi2027_iid_v2', 'kpi2027_iid_v1', 'kpi2027_admin_origin', 'kpi2027_admin_impersonating'].forEach(k => {
@@ -201,17 +271,207 @@
       const raw = localStorage.getItem(STORE);
       if (raw) {
         const d = JSON.parse(raw);
-        if (valid(d)) return normalize(d);
+        if (valid(d)) return applyUiPrefs(normalize(d));
       }
     } catch (e) { /* ignore */ }
-    return normalize(typeof buildCleanData === 'function' ? buildCleanData() : buildSampleData());
+    return applyUiPrefs(normalize(typeof buildCleanData === 'function' ? buildCleanData() : buildSampleData()));
   }
 
-  /* ---------- Đồng bộ dữ liệu Đa thiết bị (api.php + Cloud Sync tức thời + Static Store dự phòng) ----------
-     - Cơ chế 1 chiều rõ ràng:
-       + save(true) khi đã đăng nhập hoặc bấm "Đồng bộ Server" → Đẩy dữ liệu mới nhất lên Server/Cloud (0.5 giây).
-       + syncFromServer() → Chỉ tải dữ liệu mới hơn từ Server/Cloud về máy (TUYỆT ĐỐI không đẩy ngược dữ liệu cũ từ máy khác đè lên Server). */
-  const SYNC = { ok: null, lastError: '', warned: false, pushing: null, pending: false, phpDisabled: false };
+  /* ---------- Hợp nhất dữ liệu đa người dùng (Per-entity Merge + Tombstone) ----------
+     Tránh tình trạng người dùng A (Admin/Leader) lưu dữ liệu cũ đè mất KPI mà Leader B vừa cập nhật cho Staff. */
+  function mergeDeletedMaps(rd, ld) {
+    const out = { kpis: {}, depts: {}, emps: {}, users: {} };
+    ['kpis', 'depts', 'emps', 'users'].forEach(bucket => {
+      const a = rd?.[bucket] || {};
+      const b = ld?.[bucket] || {};
+      const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+      keys.forEach(k => {
+        const ts = Math.max(+a[k] || 0, +b[k] || 0);
+        if (ts > 0) out[bucket][k] = ts;
+      });
+    });
+    return out;
+  }
+
+  function mergeKpiList(rList, lList, deletedKpis, preferLocalOnTie) {
+    const rMap = new Map((rList || []).map(k => [k.id, k]));
+    const lMap = new Map((lList || []).map(k => [k.id, k]));
+    const order = [];
+    const seen = new Set();
+    (rList || []).forEach(k => { if (!seen.has(k.id)) { seen.add(k.id); order.push(k.id); } });
+    (lList || []).forEach(k => { if (!seen.has(k.id)) { seen.add(k.id); order.push(k.id); } });
+
+    const out = [];
+    order.forEach(id => {
+      const rk = rMap.get(id);
+      const lk = lMap.get(id);
+      const delTs = +(deletedKpis?.[id]) || 0;
+      const rTs = +(rk?._updatedAt) || 0;
+      const lTs = +(lk?._updatedAt) || 0;
+      if (rk && !lk) {
+        if (delTs > 0 && delTs >= rTs) return;
+        out.push(rk);
+      } else if (lk && !rk) {
+        if (delTs > 0 && delTs >= lTs) return;
+        out.push(lk);
+      } else if (rk && lk) {
+        if (delTs > 0 && delTs >= Math.max(rTs, lTs)) return;
+        if (lTs > rTs) out.push(lk);
+        else if (rTs > lTs) out.push(rk);
+        else out.push(preferLocalOnTie ? lk : rk);
+      }
+    });
+    return out;
+  }
+
+  function mergeStates(remoteRaw, localRaw) {
+    const r = normalize(JSON.parse(JSON.stringify(remoteRaw)));
+    const l = normalize(JSON.parse(JSON.stringify(localRaw)));
+    const preferLocalOnTie = (+l.updatedAt || 0) >= (+r.updatedAt || 0);
+    const deleted = mergeDeletedMaps(r.deleted, l.deleted);
+
+    const iid = mergeKpiList(r.iid, l.iid, deleted.kpis, preferLocalOnTie);
+
+    // Merge Departments
+    const rDeptMap = new Map(r.depts.map(d => [d.id, d]));
+    const lDeptMap = new Map(l.depts.map(d => [d.id, d]));
+    const deptIds = [];
+    const seenD = new Set();
+    r.depts.forEach(d => { if (!seenD.has(d.id)) { seenD.add(d.id); deptIds.push(d.id); } });
+    l.depts.forEach(d => { if (!seenD.has(d.id)) { seenD.add(d.id); deptIds.push(d.id); } });
+    const depts = [];
+    deptIds.forEach(id => {
+      const rd = rDeptMap.get(id);
+      const ld = lDeptMap.get(id);
+      const delTs = +(deleted.depts?.[id]) || 0;
+      const rTs = +(rd?._updatedAt) || 0;
+      const lTs = +(ld?._updatedAt) || 0;
+      if (rd && !ld) {
+        if (delTs > 0 && delTs >= rTs) return;
+        depts.push(rd);
+      } else if (ld && !rd) {
+        if (delTs > 0 && delTs >= lTs) return;
+        depts.push(ld);
+      } else if (rd && ld) {
+        if (delTs > 0 && delTs >= Math.max(rTs, lTs)) return;
+        const base = lTs > rTs ? ld : (rTs > lTs ? rd : (preferLocalOnTie ? ld : rd));
+        const rLinkTs = +(rd._iidLinksUpdatedAt ?? rd._updatedAt) || 0;
+        const lLinkTs = +(ld._iidLinksUpdatedAt ?? ld._updatedAt) || 0;
+        const iidLinks = lLinkTs > rLinkTs ? ld.iidLinks : (rLinkTs > lLinkTs ? rd.iidLinks : (preferLocalOnTie ? ld.iidLinks : rd.iidLinks));
+        depts.push({
+          ...base,
+          iidLinks,
+          _iidLinksUpdatedAt: Math.max(rLinkTs, lLinkTs),
+          _updatedAt: Math.max(rTs, lTs),
+          kpis: mergeKpiList(rd.kpis, ld.kpis, deleted.kpis, preferLocalOnTie)
+        });
+      }
+    });
+
+    // Merge Employees
+    const rEmpMap = new Map(r.emps.map(e => [e.id, e]));
+    const lEmpMap = new Map(l.emps.map(e => [e.id, e]));
+    const empIds = [];
+    const seenE = new Set();
+    r.emps.forEach(e => { if (!seenE.has(e.id)) { seenE.add(e.id); empIds.push(e.id); } });
+    l.emps.forEach(e => { if (!seenE.has(e.id)) { seenE.add(e.id); empIds.push(e.id); } });
+    const emps = [];
+    empIds.forEach(id => {
+      const re = rEmpMap.get(id);
+      const le = lEmpMap.get(id);
+      const delTs = +(deleted.emps?.[id]) || 0;
+      const rTs = +(re?._updatedAt) || 0;
+      const lTs = +(le?._updatedAt) || 0;
+      if (re && !le) {
+        if (delTs > 0 && delTs >= rTs) return;
+        emps.push(re);
+      } else if (le && !re) {
+        if (delTs > 0 && delTs >= lTs) return;
+        emps.push(le);
+      } else if (re && le) {
+        if (delTs > 0 && delTs >= Math.max(rTs, lTs)) return;
+        const base = lTs > rTs ? le : (rTs > lTs ? re : (preferLocalOnTie ? le : re));
+        const rIidTs = +(re._iidLinksUpdatedAt ?? re._updatedAt) || 0;
+        const lIidTs = +(le._iidLinksUpdatedAt ?? le._updatedAt) || 0;
+        const iidLinks = lIidTs > rIidTs ? le.iidLinks : (rIidTs > lIidTs ? re.iidLinks : (preferLocalOnTie ? le.iidLinks : re.iidLinks));
+        const rDeptTs = +(re._deptLinksUpdatedAt ?? re._updatedAt) || 0;
+        const lDeptTs = +(le._deptLinksUpdatedAt ?? le._updatedAt) || 0;
+        const deptLinks = lDeptTs > rDeptTs ? le.deptLinks : (rDeptTs > lDeptTs ? re.deptLinks : (preferLocalOnTie ? le.deptLinks : re.deptLinks));
+        emps.push({
+          ...base,
+          iidLinks,
+          deptLinks,
+          _iidLinksUpdatedAt: Math.max(rIidTs, lIidTs),
+          _deptLinksUpdatedAt: Math.max(rDeptTs, lDeptTs),
+          _updatedAt: Math.max(rTs, lTs),
+          kpis: mergeKpiList(re.kpis, le.kpis, deleted.kpis, preferLocalOnTie)
+        });
+      }
+    });
+
+    // Merge Users
+    const rUserMap = new Map(r.users.map(u => [u.id, u]));
+    const lUserMap = new Map(l.users.map(u => [u.id, u]));
+    const userIds = [];
+    const seenU = new Set();
+    r.users.forEach(u => { if (!seenU.has(u.id)) { seenU.add(u.id); userIds.push(u.id); } });
+    l.users.forEach(u => { if (!seenU.has(u.id)) { seenU.add(u.id); userIds.push(u.id); } });
+    const users = [];
+    userIds.forEach(id => {
+      const ru = rUserMap.get(id);
+      const lu = lUserMap.get(id);
+      const delTs = +(deleted.users?.[id]) || 0;
+      const rTs = +(ru?._updatedAt) || 0;
+      const lTs = +(lu?._updatedAt) || 0;
+      if (ru && !lu) {
+        if (delTs > 0 && delTs >= rTs) return;
+        users.push(ru);
+      } else if (lu && !ru) {
+        if (delTs > 0 && delTs >= lTs) return;
+        users.push(lu);
+      } else if (ru && lu) {
+        if (delTs > 0 && delTs >= Math.max(rTs, lTs)) return;
+        users.push(lTs > rTs ? lu : (rTs > lTs ? ru : (preferLocalOnTie ? lu : ru)));
+      }
+    });
+
+    // Merge Reviews
+    const reviews = {};
+    const revKeys = new Set([...Object.keys(r.reviews || {}), ...Object.keys(l.reviews || {})]);
+    revKeys.forEach(k => {
+      const rr = r.reviews?.[k];
+      const lr = l.reviews?.[k];
+      if (rr && !lr) reviews[k] = rr;
+      else if (lr && !rr) reviews[k] = lr;
+      else if (rr && lr) {
+        const rTs = +(rr._updatedAt) || (rr.updatedAt ? Date.parse(rr.updatedAt) || 0 : 0);
+        const lTs = +(lr._updatedAt) || (lr.updatedAt ? Date.parse(lr.updatedAt) || 0 : 0);
+        reviews[k] = lTs > rTs ? lr : (rTs > lTs ? rr : (preferLocalOnTie ? lr : rr));
+      }
+    });
+
+    const merged = normalize({
+      ...r,
+      version: 6,
+      iid,
+      depts,
+      emps,
+      users,
+      reviews,
+      deleted,
+      currentMonth: l.currentMonth,
+      selectedMonths: l.selectedMonths,
+      currentUserId: l.currentUserId,
+      updatedAt: Math.max(+l.updatedAt || 0, +r.updatedAt || 0)
+    });
+    return applyUiPrefs(merged);
+  }
+
+  /* ---------- Đồng bộ dữ liệu Đa thiết bị (api.php + Cloud Sync tức thời + Hợp nhất trước khi ghi) ----------
+     - Cơ chế an toàn đa người dùng:
+       + save(true) → Lưu ngay localStorage, đánh dấu dirty, sau đó tải bản mới nhất từ Server/Cloud, HỢP NHẤT (merge) theo từng KPI/nhân sự rồi mới đẩy lên.
+       + syncFromServer() → Chỉ tải dữ liệu mới hơn từ Server/Cloud về máy (nếu máy đang có thay đổi chưa đồng bộ thì hợp nhất thay vì ghi đè). */
+  const SYNC = { ok: null, lastError: '', warned: false, pushing: null, pending: false, phpDisabled: false, dirty: isDirty(), replacePending: false };
   const CLOUD_KV_BASE = 'https://keyvalue.immanuel.co/api/KeyVal';
   const CLOUD_APP_KEY = 'tenten_kpi27_iid_prod_v3';
   const CLOUD_NTFY_TOPIC = 'tenten_kpi2027_iid_blob_v3';
@@ -274,7 +534,7 @@
     let ntfyId = 'none';
     const nr = await fetch(`https://ntfy.sh/${CLOUD_NTFY_TOPIC}`, {
       method: 'PUT',
-      headers: { 'Filename': 'kpi_store.json' },
+      headers: { 'Filename': 'kpi_store.json', 'Title': String(ts) },
       body: rawJson
     });
     if (nr.ok) {
@@ -285,44 +545,61 @@
       throw new Error('Không tải được gói đồng bộ lên Cloud');
     }
 
-    // Cập nhật ngay con trỏ meta (chỉ mất ~0.5 giây với 2 request duy nhất) để các máy khác nhận tức thì
+    // Lưu dự phòng meta & backup chunks lên keyvalue ở chế độ nền (best-effort, KHÔNG báo lỗi nếu keyvalue 503)
     const fastMeta = `v3_${ts}_0_${ntfyId}`;
-    const mr = await fetch(`${CLOUD_KV_BASE}/UpdateValue/${CLOUD_APP_KEY}/meta/${fastMeta}`, { method: 'POST' });
-    if (!mr.ok) throw new Error(`HTTP ${mr.status} khi cập nhật con trỏ đồng bộ`);
+    fetch(`${CLOUD_KV_BASE}/UpdateValue/${CLOUD_APP_KEY}/meta/${fastMeta}`, { method: 'POST' })
+      .then(mr => {
+        if (!mr.ok) return;
+        pushBackupChunks(rawJson).then(cnt => {
+          if (cnt > 0 && S.updatedAt === ts) {
+            fetch(`${CLOUD_KV_BASE}/UpdateValue/${CLOUD_APP_KEY}/meta/v3_${ts}_${cnt}_${ntfyId}`, { method: 'POST' }).catch(() => {});
+          }
+        });
+      })
+      .catch(() => {});
 
-    // Chạy nền lưu thêm các mảnh nén dự phòng dài hạn (không chặn thao tác của người dùng)
-    pushBackupChunks(rawJson).then(cnt => {
-      if (cnt > 0 && S.updatedAt === ts) {
-        fetch(`${CLOUD_KV_BASE}/UpdateValue/${CLOUD_APP_KEY}/meta/v3_${ts}_${cnt}_${ntfyId}`, { method: 'POST' }).catch(() => {});
-      }
-    });
-
-    return { ok: true };
+    return { ok: true, ntfyId };
   }
 
   async function cloudPullMeta() {
+    const nowSec = Math.floor(Date.now() / 1000);
+    // Ưu tiên đọc trực tiếp từ luồng ntfy (nhanh, ổn định, không bị chặn khi keyvalue 503)
+    try {
+      const r2 = await fetch(`https://ntfy.sh/${CLOUD_NTFY_TOPIC}/json?poll=1&since=all&_t=${Date.now()}`, { cache: 'no-store' });
+      if (r2.ok) {
+        const txt = (await r2.text()).trim();
+        if (txt) {
+          const lines = txt.split('\n').filter(Boolean).map(l => {
+            try { return JSON.parse(l); } catch (_) { return null; }
+          }).filter(Boolean);
+          const candidates = lines
+            .filter(m => m && m.id && (!m.attachment?.expires || m.attachment.expires > nowSec))
+            .reverse();
+          if (candidates.length) {
+            const last = candidates[0];
+            const exactTs = (last.title && /^\d{12,}$/.test(String(last.title).trim()))
+              ? +String(last.title).trim()
+              : ((last.time || 0) * 1000 + 999);
+            return {
+              empty: false,
+              updatedAt: exactTs,
+              chunkCount: 0,
+              ntfyId: last.id,
+              ntfyIds: candidates.slice(0, 5).map(m => m.id)
+            };
+          }
+        }
+      }
+    } catch (_) {}
+
+    // Dự phòng: đọc con trỏ meta từ keyvalue nếu luồng ntfy đã hết hạn lưu tạm
     try {
       const r = await fetch(`${CLOUD_KV_BASE}/GetValue/${CLOUD_APP_KEY}/meta?_t=${Date.now()}`, { cache: 'no-store' });
       if (r.ok) {
         const raw = (await r.json()) || '';
         if (raw && String(raw).startsWith('v3_')) {
           const [, tsStr, cntStr, ntfyId] = String(raw).split('_');
-          return { empty: false, updatedAt: +tsStr || 0, chunkCount: +cntStr || 0, ntfyId: ntfyId || 'none' };
-        }
-      }
-    } catch (_) {}
-
-    // Dự phòng: đọc trực tiếp bản ghi mới nhất từ luồng ntfy nếu keyvalue bị chậm
-    try {
-      const r2 = await fetch(`https://ntfy.sh/${CLOUD_NTFY_TOPIC}/json?poll=1&since=all&_t=${Date.now()}`, { cache: 'no-store' });
-      if (r2.ok) {
-        const txt = (await r2.text()).trim();
-        if (txt) {
-          const lines = txt.split('\n').filter(Boolean).map(l => JSON.parse(l));
-          const last = lines.reverse().find(m => m.attachment?.url || m.id);
-          if (last) {
-            return { empty: false, updatedAt: (last.time || 0) * 1000, chunkCount: 0, ntfyId: last.id };
-          }
+          return { empty: false, updatedAt: +tsStr || 0, chunkCount: +cntStr || 0, ntfyId: ntfyId || 'none', ntfyIds: ntfyId && ntfyId !== 'none' ? [ntfyId] : [] };
         }
       }
     } catch (_) {}
@@ -331,9 +608,12 @@
   }
 
   async function cloudPullData(meta) {
-    if (meta.ntfyId && meta.ntfyId !== 'none') {
+    const ids = Array.isArray(meta.ntfyIds) && meta.ntfyIds.length
+      ? meta.ntfyIds
+      : (meta.ntfyId && meta.ntfyId !== 'none' ? [meta.ntfyId] : []);
+    for (const id of ids) {
       try {
-        const r = await fetch(`https://ntfy.sh/file/${meta.ntfyId}.json?_t=${meta.updatedAt || Date.now()}`, { cache: 'no-store' });
+        const r = await fetch(`https://ntfy.sh/file/${id}.json?_t=${meta.updatedAt || Date.now()}`, { cache: 'no-store' });
         if (r.ok) {
           const d = await r.json();
           if (valid(d)) return d;
@@ -387,14 +667,37 @@
     SYNC.ok = false;
     SYNC.lastError = msg;
     console.warn('[KPI sync]', msg);
-    if (isLoggedIn && isAdm() && !SYNC.warned) {
+    if (isLoggedIn && !SYNC.warned) {
       SYNC.warned = true;
-      toast(`⚠️ Chưa đồng bộ được dữ liệu: ${msg}`, true);
+      toast(`⚠️ Chưa đồng bộ được dữ liệu lên máy chủ: ${msg}. Dữ liệu tạm lưu trên trình duyệt và sẽ tự thử lại.`, true);
     }
   }
 
   async function doPush() {
     if (!S.updatedAt) S.updatedAt = Date.now();
+    const isReplace = Boolean(SYNC.replacePending);
+
+    // Kéo bản mới nhất từ Server/Cloud về HỢP NHẤT (merge) trước khi đẩy lên để KHÔNG bao giờ ghi đè mất KPI của người khác
+    let mergedFromRemote = false;
+    if (!isReplace) {
+      try {
+        const remote = await fetchRemoteState(0, true);
+        if (remote && !remote.empty && remote.data && valid(remote.data)) {
+          const prevRemoteTs = +remote.updatedAt || +remote.data.updatedAt || 0;
+          const merged = mergeStates(remote.data, S);
+          const realU = authUser(merged.users);
+          if (realU) merged.currentUserId = realU.id;
+          merged.updatedAt = Math.max(Date.now(), prevRemoteTs + 1, +S.updatedAt || 0);
+          S = merged;
+          computeRollups();
+          try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (_) {}
+          mergedFromRemote = true;
+        }
+      } catch (_) {
+        // Nếu tạm không kéo được remote thì vẫn đẩy bản hiện tại để không mất dữ liệu vừa nhập
+      }
+    }
+
     const rawJson = JSON.stringify(S);
 
     if (!SYNC.phpDisabled) {
@@ -408,8 +711,16 @@
         const data = await readJsonResponse(res);
         if (res.ok && data.ok) {
           SYNC.ok = true;
+          SYNC.warned = false;
           SYNC.lastError = '';
+          SYNC.replacePending = false;
+          setDirty(false);
           cloudPush(rawJson, S.updatedAt).catch(() => {});
+          if (mergedFromRemote && isLoggedIn && !isUserEditing()) {
+            updateBadge();
+            updateUserWidget();
+            render();
+          }
           return { ok: true };
         }
         SYNC.phpDisabled = true;
@@ -421,7 +732,15 @@
     try {
       await cloudPush(rawJson, S.updatedAt);
       SYNC.ok = true;
+      SYNC.warned = false;
       SYNC.lastError = '';
+      SYNC.replacePending = false;
+      setDirty(false);
+      if (mergedFromRemote && isLoggedIn && !isUserEditing()) {
+        updateBadge();
+        updateUserWidget();
+        render();
+      }
       return { ok: true };
     } catch (e) {
       reportSyncError(e.message || 'Không kết nối được máy chủ đồng bộ');
@@ -484,10 +803,14 @@
     return { source: 'cloud', empty: false, updatedAt: +data.updatedAt || meta.updatedAt || 0, data };
   }
 
-  // Chỉ tải dữ liệu mới từ Server/Cloud về máy (READ-ONLY) – không bao giờ đẩy ngược dữ liệu cũ lên Server
+  // Tải dữ liệu mới từ Server/Cloud về máy – nếu đang có thay đổi cục bộ chưa đồng bộ thì hợp nhất & đẩy lên thay vì ghi đè
   async function syncFromServer({ force = false } = {}) {
     try {
       if (SYNC.pushing) return true; // Đang đẩy dữ liệu mới lên thì không kéo bản cũ về đè
+      if (isDirty() && isLoggedIn && !force) {
+        const pr = await pushServer();
+        return Boolean(pr?.ok);
+      }
       const localTs = +S.updatedAt || 0;
       const remote = await fetchRemoteState(localTs, force);
       SYNC.ok = true;
@@ -496,21 +819,27 @@
 
       const srvTs = remote.updatedAt;
       if (!force && localTs > 0 && localTs >= srvTs) return true;
-      if (force && localTs > srvTs) return true;
+      if (force && localTs > srvTs && !isDirty()) return true;
       if (!remote.data || !valid(remote.data)) return true;
       if (!force && isUserEditing()) return true;
 
-      const srv = normalize(remote.data);
-      const activeAuth = authUser(srv.users);
-      if (activeAuth) {
-        srv.currentUserId = activeAuth.id;
+      let nextState;
+      if (isDirty()) {
+        nextState = mergeStates(remote.data, S);
+      } else {
+        nextState = applyUiPrefs(normalize(remote.data));
       }
-      S = srv;
+      const activeAuth = authUser(nextState.users);
+      if (activeAuth) {
+        nextState.currentUserId = activeAuth.id;
+      }
+      S = nextState;
       try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (_) {}
       computeRollups();
       updateBadge();
       updateUserWidget();
       if (isLoggedIn) render();
+      if (isDirty() && isLoggedIn) pushServer();
       return true;
     } catch (e) {
       SYNC.ok = false;
@@ -583,8 +912,12 @@
     return null;
   }
 
-  function save(syncRemote = true) {
-    if (syncRemote) S.updatedAt = Date.now();
+  function save(syncRemote = true, { replace = false } = {}) {
+    if (syncRemote) {
+      S.updatedAt = Date.now();
+      setDirty(true);
+      if (replace) SYNC.replacePending = true;
+    }
     // Không bao giờ để Tab xem góc nhìn (Preview Tab) ghi đè currentUserId của phiên chính
     const realU = authUser();
     if (realU) S.currentUserId = realU.id;
@@ -928,16 +1261,29 @@
     return clamp(p, 0, RULES.cap);
   }
 
+  // Điểm đóng góp của 1 KPI = Tỷ lệ hoàn thành (tối đa 150%) × Hệ số tỷ trọng (%)
+  function weightedPointsOf(k, weight, ...args) {
+    const w = +weight || 0;
+    if (!k || !(w > 0)) return null;
+    const p = pctOf(k, ...args);
+    if (p === null) return null;
+    return p * (w / 100);
+  }
+
+  // Tổng điểm KPI Bộ phận / Cá nhân = Σ (Tỷ lệ hoàn thành [≤ 150%] × Tỷ trọng %)
+  // KPI chưa có kết quả thực tế trong kỳ tính 0 điểm; trả về null nếu chưa có KPI nào có số liệu.
   function scoreOf(items, ...args) {
-    let sw = 0, s = 0;
+    let total = 0, hasData = false;
     items.forEach(it => {
       if (!it.kpi) return;
+      const w = +it.weight || 0;
+      if (!(w > 0)) return;
       const p = pctOf(it.kpi, ...args);
-      if (p === null || !(+it.weight > 0)) return;
-      sw += +it.weight;
-      s += p * it.weight;
+      if (p === null) return;
+      hasData = true;
+      total += p * (w / 100);
     });
-    return sw ? s / sw : null;
+    return hasData ? total : null;
   }
 
   const ytd = () => getSelectedMonths();
@@ -1231,16 +1577,23 @@
     const canEdit = canEditKpi(scope, eid);
     const months = resolveMonths(period);
     const periodLbl = months.length === 1 ? monthShort(months[0]) : (months.length === 12 && months[0] === 1 ? 'Năm 2027' : `${months.length} tháng`);
+    const allItems = groups.flatMap(g => g.items);
+    const totalW = sum(allItems.map(i => +i.weight || 0));
+    const totalScore = scoreOf(allItems, months);
     groups.forEach(g => {
-      rows += `<tr class="group-row"><td colspan="9">${g.title} · ${fmt(sum(g.items.map(i => i.weight)))}%</td></tr>`;
-      if (!g.items.length) rows += `<tr><td colspan="9" class="muted small">Chưa có KPI trong nhóm này</td></tr>`;
+      const grpW = sum(g.items.map(i => +i.weight || 0));
+      const grpPts = scoreOf(g.items, months);
+      rows += `<tr class="group-row"><td colspan="10">${g.title} · Tỷ trọng ${fmt(grpW)}%${grpPts !== null ? ` · <b>${fmt(grpPts, 1)} điểm</b>` : ''}</td></tr>`;
+      if (!g.items.length) rows += `<tr><td colspan="10" class="muted small">Chưa có KPI trong nhóm này</td></tr>`;
       g.items.forEach(it => {
         const k = it.kpi;
         if (!k) {
-          rows += `<tr><td><span class="tag bad">Lỗi</span></td><td colspan="7" class="muted">Liên kết tới KPI không còn tồn tại</td><td class="num">${canEdit ? it.actions || '' : ''}</td></tr>`;
+          rows += `<tr><td><span class="tag bad">Lỗi</span></td><td colspan="8" class="muted">Liên kết tới KPI không còn tồn tại</td><td class="num">${canEdit ? it.actions || '' : ''}</td></tr>`;
           return;
         }
         const p = pctOf(k, months), a = actualOf(k, months), tPeriod = targetOf(k, months);
+        const pts = weightedPointsOf(k, it.weight, months);
+        const ptsTitle = p !== null ? `Điểm KPI = ${fmt(p, 1)}% (tối đa ${RULES.cap}%) × ${fmt(it.weight)}% = ${fmt(pts, 2)} điểm` : 'Chưa có kết quả thực tế trong kỳ (tính 0 điểm)';
         rows += `<tr>
           <td class="col-source"><span class="tag ${g.cls}">${g.tag}</span></td>
           <td class="kpi-col-cell">
@@ -1256,35 +1609,46 @@
           <td class="col-link">${it.link || '<span class="muted small">—</span>'}</td>
           <td class="num col-actual"><b>${fmt(a)}</b> <span class="muted small">${esc(k.unit)}</span></td>
           <td class="col-pct">${pctBar(p)}</td>
+          <td class="num col-pts" title="${esc(ptsTitle)}"><b>${pts !== null ? fmt(pts, 1) : '–'}</b>${pts !== null ? ' <span class="muted small">đ</span>' : ''}</td>
           <td class="col-rating">${chip(p)}</td>
           <td class="num col-act" style="white-space:nowrap">${canEdit ? (it.actions || '') : ''}</td>
         </tr>`;
       });
     });
+    const footRow = allItems.length ? `<tfoot><tr style="background:var(--surface-2, #f8fafc);font-weight:700;border-top:2px solid var(--line)">
+      <td colspan="3">Tổng điểm KPI <span class="muted small" style="font-weight:400">(Σ Tỷ lệ hoàn thành [≤ ${RULES.cap}%] × Hệ số tỷ trọng)</span></td>
+      <td class="num">${fmt(totalW)}%</td>
+      <td colspan="3" class="muted small" style="font-weight:400;text-align:right">Tổng điểm quy đổi:</td>
+      <td class="num" style="color:var(--primary)">${totalScore !== null ? fmt(totalScore, 1) + ' đ' : '–'}</td>
+      <td>${chip(totalScore)}</td>
+      <td></td>
+    </tr></tfoot>` : '';
     return `<div class="table-wrap"><table class="kpi-table">
       <colgroup>
         <col style="width: 76px">
-        <col style="min-width: 300px; width: 32%">
-        <col style="width: 135px">
-        <col style="width: 85px">
-        <col style="width: 145px">
-        <col style="width: 120px">
-        <col style="width: 155px">
+        <col style="min-width: 280px; width: 30%">
         <col style="width: 130px">
+        <col style="width: 82px">
+        <col style="width: 135px">
+        <col style="width: 115px">
+        <col style="width: 145px">
+        <col style="width: 88px">
+        <col style="width: 125px">
         <col style="width: 92px">
       </colgroup>
       <thead><tr>
         <th class="col-source">Nguồn</th>
         <th class="col-kpi">KPI & Mô tả mục tiêu</th>
         <th class="num col-target">MT kỳ (${esc(periodLbl)}) / Năm</th>
-        <th class="num col-weight">Tỷ trọng</th>
+        <th class="num col-weight">Hệ số (Tỷ trọng)</th>
         <th class="col-link">Liên kết lên</th>
         <th class="num col-actual">Thực tế kỳ</th>
-        <th class="col-pct">% hoàn thành</th>
+        <th class="col-pct" title="Tỷ lệ hoàn thành tối đa ${RULES.cap}%">% HT (≤${RULES.cap}%)</th>
+        <th class="num col-pts" title="Điểm KPI = % hoàn thành (tối đa ${RULES.cap}%) × Hệ số tỷ trọng">Điểm KPI</th>
         <th class="col-rating">Đánh giá</th>
         <th class="col-act"></th>
       </tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+      <tbody>${rows}</tbody>${footRow}</table></div>`;
   }
   const kpiActions = (scope, eid, kid) =>
     `<button class="icon-btn" title="Set KPI theo từng tháng" data-action="monthly-kpi-modal" data-scope="${scope}" data-eid="${eid || ''}" data-kid="${kid}">📅</button>` +
@@ -1301,7 +1665,7 @@
     depts: ['② KPI Bộ phận', 'Mục tiêu cấp bộ phận & thiết lập KPI theo tháng'],
     emps: ['③ KPI Cá nhân', 'Thiết lập KPI năm & KPI theo từng tháng cho đến từng cá nhân'],
     tracking: ['Theo dõi & Set KPI tháng', 'Thiết lập chỉ tiêu KPI theo tháng & nhập số liệu thực tế (T12/2026 – T12/2027)'],
-    review: ['Review hàng quý', 'Tự đánh giá → Quản lý review → Chốt kết quả theo kỳ chạy thử T12/2026 & các quý'],
+    review: ['Review KPI (Tháng & Quý)', 'Tự đánh giá → Quản lý review → Chốt kết quả hàng tháng (T12/2026 – T12/2027) và hàng quý'],
     cascade: ['Cây liên kết KPI', 'Kiểm tra liên kết đa chiều: Cascade mục tiêu & Roll-up thực tế'],
     rules: ['Kiểm tra nguyên tắc', 'Rà soát tỷ trọng, số lượng KPI và liên kết theo quy định'],
     users: ['Phân quyền & Người dùng', 'Quản lý tài khoản, mật khẩu & phân cấp quản lý']
@@ -1331,29 +1695,33 @@
       // 1. KPI Khối (IID)
       const itemsIid = myEmp.iidLinks.map(l => ({ kind: 'iid', kpi: findKpi(l.kpiId)?.kpi, weight: +l.weight || 0, kpiId: l.kpiId }));
       const wIid = sum(itemsIid.map(x => x.weight));
-      const pctIid = scoreOf(itemsIid, ...P);
-      const ptsIid = (pctIid !== null && wIid > 0) ? Math.round((pctIid * wIid / 100) * 10) / 10 : (wIid === 0 ? 0 : null);
+      const rawPtsIid = scoreOf(itemsIid, ...P);
+      const ptsIid = rawPtsIid !== null ? Math.round(rawPtsIid * 10) / 10 : (wIid === 0 ? 0 : null);
+      const pctIid = (rawPtsIid !== null && wIid > 0) ? (rawPtsIid / wIid * 100) : null;
 
       // 2. KPI Bộ phận
       const itemsDept = myEmp.deptLinks.map(l => ({ kind: 'dept', kpi: findKpi(l.kpiId)?.kpi, weight: +l.weight || 0, kpiId: l.kpiId }));
       const wDept = sum(itemsDept.map(x => x.weight));
-      const pctDept = scoreOf(itemsDept, ...P);
-      const ptsDept = (pctDept !== null && wDept > 0) ? Math.round((pctDept * wDept / 100) * 10) / 10 : (wDept === 0 ? 0 : null);
+      const rawPtsDept = scoreOf(itemsDept, ...P);
+      const ptsDept = rawPtsDept !== null ? Math.round(rawPtsDept * 10) / 10 : (wDept === 0 ? 0 : null);
+      const pctDept = (rawPtsDept !== null && wDept > 0) ? (rawPtsDept / wDept * 100) : null;
 
       // 3. KPI Cá nhân
       const itemsOwn = myEmp.kpis.map(k => ({ kind: 'own', kpi: k, weight: +k.weight || 0 }));
       const wOwn = sum(itemsOwn.map(x => x.weight));
-      const pctOwn = scoreOf(itemsOwn, ...P);
-      const ptsOwn = (pctOwn !== null && wOwn > 0) ? Math.round((pctOwn * wOwn / 100) * 10) / 10 : (wOwn === 0 ? 0 : null);
+      const rawPtsOwn = scoreOf(itemsOwn, ...P);
+      const ptsOwn = rawPtsOwn !== null ? Math.round(rawPtsOwn * 10) / 10 : (wOwn === 0 ? 0 : null);
+      const pctOwn = (rawPtsOwn !== null && wOwn > 0) ? (rawPtsOwn / wOwn * 100) : null;
 
-      // Tổng điểm (Chuẩn 100 điểm)
+      // Tổng điểm KPI = Σ (Tỷ lệ hoàn thành [tối đa 150%] × Hệ số tỷ trọng %)
       const totalSetPts = Math.round((wIid + wDept + wOwn) * 10) / 10 || 100;
-      const validEarned = (ptsIid || 0) + (ptsDept || 0) + (ptsOwn || 0);
-      const totalEarnedPts = Math.round(validEarned * 10) / 10;
-      const overallPct = totalSetPts > 0 ? Math.round((totalEarnedPts / totalSetPts * 100) * 10) / 10 : null;
+      const empTotalRaw = empScore(myEmp, ...P);
+      const totalEarnedPts = empTotalRaw !== null ? Math.round(empTotalRaw * 10) / 10 : 0;
+      const overallPct = empTotalRaw;
+      const barDenom = Math.max(100, (ptsIid || 0) + (ptsDept || 0) + (ptsOwn || 0));
 
-      // Trạng thái review quý
-      const myRev = S.reviews[reviewKey('emp', myEmp.id, curQ)] || { status: 'todo' };
+      // Trạng thái review tháng hiện tại
+      const myRev = getReview('emp', myEmp.id, 'month', m);
       const st = REVIEW_STATUS.find(x => x[0] === myRev.status) || REVIEW_STATUS[0];
 
       const roleMap = {
@@ -1382,7 +1750,7 @@
         <div class="row" style="flex-wrap:wrap;gap:8px">
           <button class="btn ghost" data-action="monthly-kpi-modal" data-scope="emp" data-eid="${myEmp.id}">📅 Set KPI theo tháng</button>
           <button class="btn" data-action="goto" data-view="tracking">▤ Nhập số liệu ${monthShort(m)}</button>
-          <button class="btn ghost" data-action="review-edit" data-type="emp" data-eid="${myEmp.id}">★ Tự đánh giá ${qLabel} <span class="tag ${st[2]}" style="margin-left:4px">${st[1]}</span></button>
+          <button class="btn ghost" data-action="review-edit" data-type="emp" data-eid="${myEmp.id}" data-mode="month" data-val="${m}">★ Tự đánh giá ${monthShort(m)} <span class="tag ${st[2]}" style="margin-left:4px">${st[1]}</span></button>
         </div>
       </section>
 
@@ -1390,22 +1758,22 @@
         <div class="score-head">
           <div>
             <div class="label-caps">Tổng điểm KPI · ${formatMonthsLabel(P)}</div>
-            <div class="score-big">${totalEarnedPts}<span>/ ${totalSetPts} điểm</span></div>
+            <div class="score-big">${totalEarnedPts}<span>/ ${totalSetPts} điểm (tối đa ${RULES.cap}đ)</span></div>
           </div>
           <div style="text-align:right">
             ${chip(overallPct)}
-            <div class="small muted" style="margin-top:6px">= Khối ${wIid}đ + Bộ phận ${wDept}đ + Cá nhân ${wOwn}đ</div>
+            <div class="small muted" style="margin-top:6px">= Σ (Tỷ lệ HT ≤ ${RULES.cap}% × Hệ số) · Khối ${wIid}% + BP ${wDept}% + CN ${wOwn}%</div>
           </div>
         </div>
 
         <div class="stacked-kpi-bar" title="Khối: ${ptsIid || 0}đ | Bộ phận: ${ptsDept || 0}đ | Cá nhân: ${ptsOwn || 0}đ">
-          <div class="stacked-seg iid" style="width:${Math.max(0, Math.min(ptsIid || 0, 100))}%" title="KPI Khối: ${ptsIid || 0}/${wIid} điểm">
+          <div class="stacked-seg iid" style="width:${Math.max(0, ((ptsIid || 0) / barDenom * 100))}%" title="KPI Khối: ${ptsIid || 0}/${wIid} điểm">
             ${(ptsIid || 0) >= 8 ? `Khối: ${ptsIid}đ` : ''}
           </div>
-          <div class="stacked-seg dept" style="width:${Math.max(0, Math.min(ptsDept || 0, 100))}%" title="KPI Bộ phận: ${ptsDept || 0}/${wDept} điểm">
+          <div class="stacked-seg dept" style="width:${Math.max(0, ((ptsDept || 0) / barDenom * 100))}%" title="KPI Bộ phận: ${ptsDept || 0}/${wDept} điểm">
             ${(ptsDept || 0) >= 8 ? `Bộ phận: ${ptsDept}đ` : ''}
           </div>
-          <div class="stacked-seg own" style="width:${Math.max(0, Math.min(ptsOwn || 0, 100))}%" title="KPI Cá nhân: ${ptsOwn || 0}/${wOwn} điểm">
+          <div class="stacked-seg own" style="width:${Math.max(0, ((ptsOwn || 0) / barDenom * 100))}%" title="KPI Cá nhân: ${ptsOwn || 0}/${wOwn} điểm">
             ${(ptsOwn || 0) >= 8 ? `Cá nhân: ${ptsOwn}đ` : ''}
           </div>
         </div>
@@ -1500,7 +1868,7 @@
           </div>
           <div class="row" style="gap:8px">
             <button class="btn ghost sm" data-action="goto-track-targets" data-level="emp">📅 Set KPI tháng cho team</button>
-            <button class="btn ghost sm" data-action="goto" data-view="review">★ Đánh giá ${qLabel} cho team</button>
+            <button class="btn ghost sm" data-action="goto" data-view="review">★ Đánh giá ${monthShort(m)} cho team</button>
           </div>
         </div>
         <div class="dept-list mt">
@@ -1557,7 +1925,7 @@
       <div class="row" style="flex-wrap:wrap;gap:8px">
         <button class="btn ghost" data-action="goto-track-targets" data-level="emp">🎯 Set KPI theo tháng (Cá nhân)</button>
         <button class="btn" data-action="goto" data-view="tracking" id="hero-tracking">▤ Nhập số liệu ${monthShort(m)}</button>
-        <button class="btn ghost" data-action="goto" data-view="review" id="hero-review">★ Review ${qLabel}</button>
+        <button class="btn ghost" data-action="goto" data-view="review" id="hero-review">★ Review ${monthShort(m)}</button>
       </div>
     </section>
 
@@ -1639,7 +2007,8 @@
     };
     const canManage = canManageIid();
     const rows = S.iid.map(k => {
-      const p = pctOf(k, ...P), tP = targetOf(k, ...P);
+      const p = pctOf(k, ...P), tP = targetOf(k, ...P), pts = weightedPointsOf(k, k.weight, ...P);
+      const ptsTitle = p !== null ? `Điểm KPI = ${fmt(p, 1)}% (tối đa ${RULES.cap}%) × ${fmt(k.weight)}% = ${fmt(pts, 2)} điểm` : 'Chưa có kết quả thực tế trong kỳ';
       return `<tr>
         <td class="kpi-col-cell">
           <div class="kpi-name">${esc(k.name)} ${rollupBadge(k)}</div>
@@ -1655,6 +2024,7 @@
         <td class="small muted col-calc">${AGGREGATIONS[k.aggregation]}<br>${dirTxt(k)}</td>
         <td class="num col-actual"><b>${fmt(actualOf(k, ...P))}</b> <span class="muted small">${esc(k.unit)}</span></td>
         <td class="col-pct">${pctBar(p)}</td>
+        <td class="num col-pts" title="${esc(ptsTitle)}"><b>${pts !== null ? fmt(pts, 1) : '–'}</b>${pts !== null ? ' <span class="muted small">đ</span>' : ''}</td>
         <td class="col-rating">${chip(p)}</td>
         <td class="col-cascade">${linkedCount(k)}</td>
         <td class="num col-act" style="white-space:nowrap">${canManage ? kpiActions('iid', '', k.id) : '<span class="muted small">Xem</span>'}</td></tr>`;
@@ -1671,9 +2041,9 @@
         <div class="mt">${weightStat('Tổng tỷ trọng KPI IID', tw, null)}</div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>Cơ chế Setup & Roll-up KPI IID (Theo tháng & Năm)</h2></div>
+        <div class="card-head"><h2>Cơ chế Setup, Roll-up & Tính điểm KPI</h2></div>
         <div class="small muted" style="display:grid;gap:8px">
-          <div>• <b>Thiết lập theo tháng</b>: Hỗ trợ đặt chỉ tiêu KPI riêng cho từng tháng (bao gồm <b>Tháng 12/2026 chạy thử</b> và T1–T12/2027).</div>
+          <div>• <b>Quy tắc tính điểm</b>: Tỷ lệ hoàn thành từng KPI tối đa <b>${RULES.cap}%</b>, nhân với hệ số tỷ trọng (%) của từng KPI rồi cộng tổng thành điểm KPI Khối / Bộ phận / Cá nhân.</div>
           <div>• <b>⚡ Tự động Roll-up</b>: Tự động cộng dồn cả mục tiêu tháng và kết quả thực tế từ các phòng ban.</div>
           <div>• <b>Quyền hạn</b>: ${canManage ? '<span class="tag good">Bạn có quyền Admin để điều chỉnh mục tiêu khối</span>' : '<span class="tag">Chế độ xem định hướng chung</span>'}</div>
         </div>
@@ -1691,30 +2061,32 @@
       </div>
       <div class="table-wrap"><table class="kpi-table">
         <colgroup>
-          <col style="min-width: 300px; width: 30%">
-          <col style="width: 95px">
-          <col style="width: 135px">
-          <col style="width: 85px">
+          <col style="min-width: 280px; width: 28%">
+          <col style="width: 90px">
           <col style="width: 130px">
-          <col style="width: 120px">
-          <col style="width: 155px">
-          <col style="width: 130px">
-          <col style="width: 105px">
+          <col style="width: 82px">
+          <col style="width: 125px">
+          <col style="width: 115px">
+          <col style="width: 145px">
+          <col style="width: 88px">
+          <col style="width: 125px">
+          <col style="width: 100px">
           <col style="width: 92px">
         </colgroup>
         <thead><tr>
           <th class="col-kpi">KPI Tổng IID & Mô tả</th>
           <th class="col-type">Loại</th>
           <th class="num col-target">MT kỳ (${esc(periodLbl)}) / Năm</th>
-          <th class="num col-weight">Tỷ trọng</th>
+          <th class="num col-weight">Hệ số (Tỷ trọng)</th>
           <th class="col-calc">Cách tính</th>
           <th class="num col-actual">Thực tế kỳ</th>
-          <th class="col-pct">% hoàn thành</th>
+          <th class="col-pct" title="Tỷ lệ hoàn thành tối đa ${RULES.cap}%">% HT (≤${RULES.cap}%)</th>
+          <th class="num col-pts" title="Điểm KPI = % hoàn thành (tối đa ${RULES.cap}%) × Hệ số tỷ trọng">Điểm KPI</th>
           <th class="col-rating">Đánh giá</th>
           <th class="col-cascade">Được cascade</th>
           <th class="col-act"></th>
         </tr></thead>
-        <tbody>${rows || '<tr><td colspan="10" class="empty">Chưa có KPI IID</td></tr>'}</tbody>
+        <tbody>${rows || '<tr><td colspan="11" class="empty">Chưa có KPI IID</td></tr>'}</tbody>
       </table></div>
     </section>
 
@@ -1936,7 +2308,14 @@
   }
 
   function trackSummary(T) {
-    const P = ytd(), s = scoreOf(T.items, ...P);
+    const P = ytd();
+    let s;
+    if (T.scope === 'emp_all') {
+      const empScores = (T.emps || []).map(e => empScore(e, ...P)).filter(v => v !== null);
+      s = empScores.length ? sum(empScores) / empScores.length : null;
+    } else {
+      s = scoreOf(T.items, ...P);
+    }
     let filled = 0, need = 0;
     T.kpis.forEach(k => { P.forEach(m => { need++; if (isNum(k.monthly[m])) filled++; }); });
     const comp = need ? filled / need * 100 : 0;
@@ -2199,6 +2578,7 @@
           k.target = k.aggregation === 'sum' ? Math.round(v * 12 * 100) / 100 : v;
         }
       }
+      k._updatedAt = Date.now();
       computeRollups();
       save();
       refreshTrackRowUI(inp, k);
@@ -2209,6 +2589,7 @@
     if (inp.classList.contains('annual-target-input')) {
       if (v === null || v <= 0) { inp.classList.add('invalid'); toast('Mục tiêu năm phải lớn hơn 0', true); return; }
       k.target = v;
+      k._updatedAt = Date.now();
       computeRollups();
       save();
       refreshTrackRowUI(inp, k);
@@ -2217,6 +2598,7 @@
     }
 
     k.monthly[+m] = v;
+    k._updatedAt = Date.now();
     inp.classList.toggle('filled', v !== null);
 
     computeRollups();
@@ -2224,42 +2606,56 @@
     refreshTrackRowUI(inp, k);
   }
 
-  /* ---------- Review hàng quý & Kỳ chạy thử T12/2026 ---------- */
-  const reviewKey = (type, id, q) => `${type}_${id}_Q${q}`;
-  const getReview = (type, id, q) => S.reviews[reviewKey(type, id, q)] || { status: 'todo', self: '', mgr: '', plan: '', adjust: '' };
+  /* ---------- Review hàng tháng & hàng quý (T12/2026 – T12/2027) ---------- */
+  const reviewKey = (type, id, modeOrQ, val) => {
+    if (modeOrQ === 'month') return `${type}_${id}_M${val}`;
+    if (modeOrQ === 'quarter') return `${type}_${id}_Q${val}`;
+    return `${type}_${id}_Q${modeOrQ}`;
+  };
+  const getReview = (type, id, modeOrQ, val) => S.reviews[reviewKey(type, id, modeOrQ, val)] || { status: 'todo', self: '', mgr: '', plan: '', adjust: '' };
   const statusIdx = s => REVIEW_STATUS.findIndex(x => x[0] === s);
   function viewReview() {
-    if (UI.reviewQ === null || UI.reviewQ === undefined) UI.reviewQ = qOf(S.currentMonth);
+    const mode = UI.reviewMode === 'quarter' ? 'quarter' : 'month';
+    const curM = isNum(S.currentMonth) ? +S.currentMonth : 0;
+    if (UI.reviewM === null || UI.reviewM === undefined) UI.reviewM = curM;
+    if (UI.reviewQ === null || UI.reviewQ === undefined) UI.reviewQ = qOf(curM);
+
+    const m = clamp(+UI.reviewM || 0, 0, MONTHS.length - 1);
     const q = +UI.reviewQ;
     const Q = QUARTERS.find(x => x.q === q) || QUARTERS[0];
-    const R = qRange(q);
-    const started = Q.from <= (isNum(S.currentMonth) ? +S.currentMonth : 0) || q === 0;
     const prevQ = QUARTERS.find(x => x.q === q - 1);
+
+    const periodVal = mode === 'month' ? m : q;
+    const R = mode === 'month' ? [m, m] : qRange(q);
+    const prevR = mode === 'month' ? (m > 0 ? [m - 1, m - 1] : null) : (prevQ ? [prevQ.from, prevQ.to] : null);
+    const periodTitle = mode === 'month'
+      ? monthFull(m)
+      : (q === 0 ? 'Tháng 12/2026 (Chạy thử)' : `Quý ${q}/2027`);
     const u = curUser();
 
     let ents = [];
     if (u.role === 'staff') {
       getVisibleEmps().forEach(e => {
-        ents.push({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: prevQ ? empScore(e, prevQ.from, prevQ.to) : null });
+        ents.push({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: empScore(e, ...R), prev: prevR ? empScore(e, ...prevR) : null });
       });
     } else if (u.role === 'manager' || u.role === 'leader') {
       getVisibleDepts().forEach(d => {
-        ents.push({ type: 'dept', id: d.id, name: d.name, sub: 'Trưởng BP: ' + (d.leader || '—'), av: avatar(deptInitials(d), d.color, 34), score: started ? deptScore(d, ...R) : null, prev: prevQ ? deptScore(d, prevQ.from, prevQ.to) : null });
+        ents.push({ type: 'dept', id: d.id, name: d.name, sub: 'Trưởng BP: ' + (d.leader || '—'), av: avatar(deptInitials(d), d.color, 34), score: deptScore(d, ...R), prev: prevR ? deptScore(d, ...prevR) : null });
       });
       getVisibleEmps().forEach(e => {
-        ents.push({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: prevQ ? empScore(e, prevQ.from, prevQ.to) : null });
+        ents.push({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: empScore(e, ...R), prev: prevR ? empScore(e, ...prevR) : null });
       });
     } else {
       ents = [
-        ...S.depts.map(d => ({ type: 'dept', id: d.id, name: d.name, sub: 'Trưởng BP: ' + (d.leader || '—'), av: avatar(deptInitials(d), d.color, 34), score: started ? deptScore(d, ...R) : null, prev: prevQ ? deptScore(d, prevQ.from, prevQ.to) : null })),
-        ...S.emps.map(e => ({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: started ? empScore(e, ...R) : null, prev: prevQ ? empScore(e, prevQ.from, prevQ.to) : null }))
+        ...S.depts.map(d => ({ type: 'dept', id: d.id, name: d.name, sub: 'Trưởng BP: ' + (d.leader || '—'), av: avatar(deptInitials(d), d.color, 34), score: deptScore(d, ...R), prev: prevR ? deptScore(d, ...prevR) : null })),
+        ...S.emps.map(e => ({ type: 'emp', id: e.id, name: e.name, sub: `${e.title || ''} · ${deptById(e.deptId)?.name || ''}`, av: avatar(empInitials(e), empColor(e), 34), score: empScore(e, ...R), prev: prevR ? empScore(e, ...prevR) : null }))
       ];
     }
 
     const shown = (u.role === 'staff') ? ents : ents.filter(x => UI.reviewFilter === 'all' || x.type === UI.reviewFilter);
     const finalCode = (x, r) => r.adjust || rating(x.score).code;
     const rows = shown.map(x => {
-      const r = getReview(x.type, x.id, q), st = REVIEW_STATUS[Math.max(0, statusIdx(r.status))];
+      const r = getReview(x.type, x.id, mode, periodVal), st = REVIEW_STATUS[Math.max(0, statusIdx(r.status))];
       const fc = finalCode(x, r);
       const delta = x.score !== null && x.prev !== null ? x.score - x.prev : null;
       const trend = delta === null ? '<span class="muted">–</span>' : `<span style="color:${delta >= 0 ? 'var(--green)' : 'var(--red)'}">${delta >= 0 ? '▲' : '▼'} ${fmt(Math.abs(delta), 1)}</span>`;
@@ -2272,48 +2668,69 @@
         <td>${chip(x.score)}</td>
         <td>${fc === 'NA' ? '<span class="muted">–</span>' : `<span class="chip r-${fc}">${fc}${r.adjust ? ' · điều chỉnh' : ''}</span>`}</td>
         <td><span class="tag ${st[2]}">${st[1]}</span></td>
-        <td class="num"><button class="btn ghost sm" data-action="review-edit" data-type="${x.type}" data-eid="${x.id}" ${started ? '' : 'disabled'}>${btnText}</button></td>
+        <td class="num"><button class="btn ghost sm" data-action="review-edit" data-type="${x.type}" data-eid="${x.id}" data-mode="${mode}" data-val="${periodVal}">${btnText}</button></td>
       </tr>`;
     }).join('');
 
-    const qTabs = QUARTERS.map(x => `<button class="${x.q === q ? 'active' : ''}" data-action="review-q" data-val="${x.q}">${x.q === 0 ? '🚀 T12/2026 (Chạy thử)' : 'Quý ' + x.q}</button>`).join('');
+    const modeTabs = `
+      <button class="${mode === 'month' ? 'active' : ''}" data-action="review-mode" data-val="month">📅 Review hàng tháng</button>
+      <button class="${mode === 'quarter' ? 'active' : ''}" data-action="review-mode" data-val="quarter">📊 Review hàng quý</button>`;
+    const periodTabs = mode === 'month'
+      ? MONTHS.map((lbl, idx) => `<button class="${idx === m ? 'active' : ''}" data-action="review-m" data-val="${idx}" title="${esc(MONTH_NAMES[idx])}">${idx === 0 ? '🚀 ' + lbl : lbl}</button>`).join('')
+      : QUARTERS.map(x => `<button class="${x.q === q ? 'active' : ''}" data-action="review-q" data-val="${x.q}">${x.q === 0 ? '🚀 T12/2026 (Chạy thử)' : 'Quý ' + x.q}</button>`).join('');
     const fTabs = (u.role === 'staff') ? '' : [['all', 'Tất cả'], ['dept', 'Bộ phận'], ['emp', 'Cá nhân']].map(([v, l]) => `<button class="${UI.reviewFilter === v ? 'active' : ''}" data-action="review-filter" data-val="${v}">${l}</button>`).join('');
-    const qTitle = q === 0 ? 'Tháng 12/2026 (Chạy thử)' : `Quý ${q}/2027`;
+    const prevColLabel = mode === 'month' ? 'So tháng trước' : 'So quý trước';
 
     return `
-    <div class="row" style="flex-wrap:wrap"><div class="tabs">${qTabs}</div><span class="spacer"></span>${fTabs ? `<div class="tabs">${fTabs}</div>` : ''}</div>
+    <div class="row" style="flex-wrap:wrap;gap:8px">
+      <div class="tabs">${modeTabs}</div>
+      <span class="spacer"></span>
+      ${fTabs ? `<div class="tabs">${fTabs}</div>` : ''}
+    </div>
+    <div class="row mt-s" style="flex-wrap:wrap;gap:8px">
+      <div class="tabs" style="flex-wrap:wrap">${periodTabs}</div>
+    </div>
     <section class="card mt">
       <div class="card-head">
-        <h2>${u.role === 'staff' ? `Đánh giá ${qTitle} của bạn` : `Kết quả đánh giá ${qTitle}`}</h2>
+        <h2>${u.role === 'staff' ? `Đánh giá ${periodTitle} của bạn` : `Kết quả đánh giá ${periodTitle}`}</h2>
+        <span class="tag ${mode === 'month' ? 'iid' : 'dept'}">${mode === 'month' ? 'Review tháng' : 'Review quý'}</span>
         <span class="tag">${shown.length} đối tượng</span>
       </div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Đối tượng</th><th>Cấp</th><th class="num">Điểm kỳ</th><th class="num">So kỳ trước</th><th>Xếp loại theo điểm</th><th>Xếp loại cuối</th><th>Trạng thái</th><th></th></tr></thead>
+        <thead><tr><th>Đối tượng</th><th>Cấp</th><th class="num">Điểm kỳ</th><th class="num">${prevColLabel}</th><th>Xếp loại theo điểm</th><th>Xếp loại cuối</th><th>Trạng thái</th><th></th></tr></thead>
         <tbody>${rows || '<tr><td colspan="8" class="empty">Không có dữ liệu</td></tr>'}</tbody>
       </table></div>
     </section>`;
   }
 
-  function reviewModal(type, id) {
-    const q = UI.reviewQ ?? qOf(S.currentMonth), R = qRange(q);
-    const qTitle = +q === 0 ? 'Tháng 12/2026 (Chạy thử)' : `Quý ${q}`;
+  function reviewModal(type, id, modeOverride, valOverride) {
+    const mode = (modeOverride === 'month' || modeOverride === 'quarter') ? modeOverride : (UI.reviewMode === 'quarter' ? 'quarter' : 'month');
+    const curM = isNum(S.currentMonth) ? +S.currentMonth : 0;
+    const periodVal = (valOverride !== undefined && valOverride !== null && valOverride !== '')
+      ? +valOverride
+      : (mode === 'month' ? (UI.reviewM ?? curM) : (UI.reviewQ ?? qOf(curM)));
+    const R = mode === 'month' ? [periodVal, periodVal] : qRange(periodVal);
+    const periodTitle = mode === 'month'
+      ? monthFull(periodVal)
+      : (+periodVal === 0 ? 'Tháng 12/2026 (Chạy thử)' : `Quý ${periodVal}`);
     const ent = type === 'dept' ? deptById(id) : empById(id);
     if (!ent) return;
     const score = type === 'dept' ? deptScore(ent, ...R) : empScore(ent, ...R);
-    const auto = rating(score), r = getReview(type, id, q);
+    const auto = rating(score), r = getReview(type, id, mode, periodVal);
     const items = type === 'dept' ? deptItems(ent) : empItems(ent);
     const breakdown = items.filter(i => i.kpi).map(i => {
       const p = pctOf(i.kpi, ...R);
-      return `<div class="row small" style="padding:4px 0;border-bottom:1px solid var(--line)"><span style="flex:1">${esc(i.kpi.name)}</span><span class="muted">MT kỳ: ${fmt(targetOf(i.kpi, ...R))} ${esc(i.kpi.unit)} · Tỷ trọng ${fmt(i.weight)}%</span><b style="min-width:60px;text-align:right">${pctTxt(p)}</b></div>`;
+      const pts = weightedPointsOf(i.kpi, i.weight, ...R);
+      return `<div class="row small" style="padding:4px 0;border-bottom:1px solid var(--line);gap:8px"><span style="flex:1">${esc(i.kpi.name)}</span><span class="muted">MT kỳ: ${fmt(targetOf(i.kpi, ...R))} ${esc(i.kpi.unit)} · Hệ số ${fmt(i.weight)}%</span><span style="min-width:56px;text-align:right">${pctTxt(p)}</span><b style="min-width:56px;text-align:right;color:var(--primary)">${pts !== null ? fmt(pts, 1) + ' đ' : '0 đ'}</b></div>`;
     }).join('');
 
     const canSelf = canReviewSelf(type, id);
     const canMgr = canReviewMgr(type, id);
     const canFinal = canFinalizeReview();
 
-    openModal(`★ Review ${qTitle} – ${ent.name}`, `
+    openModal(`★ Review ${periodTitle} – ${ent.name}`, `
       <div class="weight-preview">
-        <div class="row">${ring(score)}<div><b>Điểm tự động: ${pctTxt(score)}</b><div class="mt-s">${chip(score)}</div></div></div>
+        <div class="row">${ring(score)}<div><b>Tổng điểm KPI: ${score !== null ? fmt(score, 1) + ' điểm' : '–'}</b><div class="small muted">Σ (Tỷ lệ HT [≤ ${RULES.cap}%] × Hệ số tỷ trọng)</div><div class="mt-s">${chip(score)}</div></div></div>
         <div class="mt">${breakdown || '<span class="muted">Chưa có KPI</span>'}</div>
       </div>
       <div class="field full"><label for="rv-self">Tự đánh giá (Nhân sự tự điền) ${canSelf ? '' : '<span class="tag">Chỉ đọc</span>'}</label>
@@ -2332,7 +2749,7 @@
             return `<option value="${s[0]}" ${r.status === s[0] ? 'selected' : ''} ${dis}>${s[1]}</option>`;
           }).join('')}
         </select></div>
-      <div class="field full"><label for="rv-plan">Kế hoạch hành động kỳ tiếp theo</label>
+      <div class="field full"><label for="rv-plan">Kế hoạch hành động ${mode === 'month' ? 'tháng tiếp theo' : 'kỳ tiếp theo'}</label>
         <textarea id="rv-plan" name="plan">${esc(r.plan)}</textarea></div>
     `, fd => {
       const v = Object.fromEntries(fd);
@@ -2340,15 +2757,16 @@
         toast('Vui lòng ghi nhận xét của quản lý khi điều chỉnh xếp loại', true);
         return false;
       }
-      S.reviews[reviewKey(type, id, q)] = {
+      S.reviews[reviewKey(type, id, mode, periodVal)] = {
         status: v.status || r.status,
         self: v.self ?? r.self,
         mgr: v.mgr ?? r.mgr,
         plan: v.plan ?? r.plan,
         adjust: v.adjust ?? r.adjust,
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
+        _updatedAt: Date.now()
       };
-      save(); render(); toast('Đã lưu đánh giá ' + qTitle);
+      save(); render(); toast('Đã lưu đánh giá ' + periodTitle);
     });
   }
 
@@ -2415,6 +2833,18 @@
       <div class="card stat"><span class="glow" style="background:var(--red)"></span><div class="label">Lỗi bắt buộc sửa</div><div class="value" style="color:${r.errors ? 'var(--red)' : 'var(--green)'}">${r.errors}</div><div class="hint">Vi phạm quy định tỷ trọng / số lượng / liên kết</div></div>
       <div class="card stat"><span class="glow" style="background:var(--yellow)"></span><div class="label">Cảnh báo</div><div class="value" style="color:var(--yellow)">${r.warns}</div><div class="hint">Khuyến nghị để KPI chất lượng hơn</div></div>
       <div class="card stat"><span class="glow" style="background:var(--green)"></span><div class="label">Đạt toàn bộ</div><div class="value" style="color:var(--green)">${r.oks.length}</div><div class="hint">đối tượng tuân thủ 100% nguyên tắc</div></div>
+    </section>
+    <section class="card mt">
+      <div class="card-head" style="flex-wrap:wrap;gap:8px">
+        <h2>📐 Quy tắc tính điểm KPI</h2>
+        <span class="tag good">Trần hoàn thành: tối đa ${RULES.cap}%</span>
+      </div>
+      <div class="small" style="display:grid;gap:8px;line-height:1.55">
+        <div>1. <b>Tỷ lệ hoàn thành từng KPI</b>: tính theo <code>Thực tế / Mục tiêu × 100%</code> (hoặc <code>Mục tiêu / Thực tế × 100%</code> với KPI càng thấp càng tốt), <b>tối đa ghi nhận ${RULES.cap}%</b>.</div>
+        <div>2. <b>Điểm từng KPI (sau khi nhân hệ số)</b>: <code>Điểm KPI = Tỷ lệ hoàn thành (≤ ${RULES.cap}%) × Hệ số tỷ trọng (%)</code>. Các KPI chưa có kết quả thực tế trong kỳ được tính <b>0 điểm</b>.</div>
+        <div>3. <b>Tổng điểm KPI Bộ phận / Cá nhân</b>: <code>Tổng điểm = Σ (Điểm từng KPI)</code> (tối đa ${RULES.cap} điểm khi tổng tỷ trọng = 100%).</div>
+        <div>4. <b>Xếp loại tự động</b>: <b>A</b> (≥ 100%) · <b>B</b> (90 – &lt;100%) · <b>C</b> (75 – &lt;90%) · <b>D</b> (&lt; 75%).</div>
+      </div>
     </section>
     <section class="card mt">
       <div class="card-head" style="flex-wrap:wrap;gap:8px">
@@ -2646,6 +3076,7 @@
 
       u.password = newPass;
       u.pwdChanged = cleanPwdStr(newPass) !== 'password123';
+      u._updatedAt = Date.now();
       if (!isPreviewTab() && u.id === S.currentUserId) {
         setSavedAuthSession(u);
       }
@@ -2964,6 +3395,7 @@
       target.role = role;
       target.deptId = primaryDept;
       target.managedDeptIds = managedDeptIds;
+      target._updatedAt = Date.now();
       linkUserToEmp(target);
       computeRollups();
       save(); render();
@@ -3036,7 +3468,7 @@
         ? (rawPwdInput ? (rawPwdInput !== 'password123') : Boolean(target.pwdChanged || isUserPasswordChanged(target)))
         : (finalPassword !== 'password123');
 
-      const patch = { name, email, password: finalPassword, pwdChanged: finalPwdChanged, role: v.role, title: String(v.title || '').trim(), deptId: primaryDept, managedDeptIds };
+      const patch = { name, email, password: finalPassword, pwdChanged: finalPwdChanged, role: v.role, title: String(v.title || '').trim(), deptId: primaryDept, managedDeptIds, _updatedAt: Date.now() };
       let acc;
       if (target) {
         Object.assign(target, patch);
@@ -3104,6 +3536,7 @@
     e.name = u.name;
     e.title = u.title;
     e.role = u.role;
+    e._updatedAt = Date.now();
 
     // Cập nhật thông tin Manager / Leader phụ trách trên các Bộ phận (thêm vào team mới và gỡ khỏi team đã bỏ chọn)
     const isDeptHead = u.role === 'manager' || u.role === 'leader';
@@ -3112,6 +3545,7 @@
         if (!d.leader || d.managerId === u.id || d.id === u.deptId) {
           d.leader = u.name;
           d.managerId = u.id;
+          d._updatedAt = Date.now();
         }
       } else if (d.managerId === u.id || (d.leader && u.name && d.leader.trim().toLowerCase() === u.name.trim().toLowerCase())) {
         // Tìm xem có Leader hoặc Manager nào khác đang phụ trách bộ phận này không
@@ -3120,6 +3554,7 @@
           S.users.find(o => o.id !== u.id && o.role === 'manager' && Array.isArray(o.managedDeptIds) && o.managedDeptIds.includes(d.id));
         d.managerId = otherHead ? otherHead.id : null;
         d.leader = otherHead ? otherHead.name : '';
+        d._updatedAt = Date.now();
       }
     });
     return moved;
@@ -3143,6 +3578,7 @@
       u.name = e.name;
       u.title = e.title;
       if (u.role !== 'admin') u.role = e.role || u.role;
+      u._updatedAt = Date.now();
       linkUserToEmp(u);
     });
   }
@@ -3415,6 +3851,7 @@
           if (u.role !== 'admin' || item.role === 'admin') u.role = item.role;
           if (item.deptId) u.deptId = item.deptId;
           if (item.password) u.password = item.password;
+          u._updatedAt = Date.now();
           updatedN++;
         } else {
           u = {
@@ -3425,7 +3862,8 @@
             role: item.role,
             title: item.title,
             deptId: item.deptId || null,
-            empId: null
+            empId: null,
+            _updatedAt: Date.now()
           };
           S.users.push(u);
           createdN++;
@@ -3601,7 +4039,8 @@
         rollupMode,
         direction: v.direction, aggregation: agg, type: v.type, frequency: v.frequency,
         owner: v.owner.trim(), source: v.source.trim(), linkTo: linkOpts ? (v.linkTo || null) : null,
-        monthlyTargets: finalMonthlyTargets
+        monthlyTargets: finalMonthlyTargets,
+        _updatedAt: Date.now()
       };
       if (old) Object.assign(old, patch); else list.push(Object.assign(k, patch));
       computeRollups();
@@ -3797,6 +4236,48 @@
       }
     }
 
+    const persistMonthlyForm = (fd, silent = false) => {
+      if (!canEdit || !list.length) return false;
+      const v = Object.fromEntries(fd);
+      const now = Date.now();
+      let changed = false;
+      list.forEach(k => {
+        if (k.rollupMode && k.rollupMode !== 'manual') return;
+        const yrRaw = v[`yr_${k.id}`];
+        let yrVal = isNum(yrRaw) ? +yrRaw : k.target;
+        const mtArr = MONTHS.map((_, m) => {
+          const r = v[`mt_${k.id}_${m}`];
+          return isNum(r) ? +r : null;
+        });
+        if (!(yrVal > 0)) {
+          const valid27 = mtArr.slice(1, 13).filter(isNum);
+          if (valid27.length) {
+            yrVal = k.aggregation === 'sum'
+              ? Math.round(sum(valid27) * 100) / 100
+              : Math.round((sum(valid27) / valid27.length) * 100) / 100;
+          } else if (isNum(mtArr[0]) && mtArr[0] > 0) {
+            yrVal = k.aggregation === 'sum' ? Math.round(mtArr[0] * 12 * 100) / 100 : mtArr[0];
+          }
+        }
+        const prevTarget = k.target;
+        const prevMt = JSON.stringify(k.monthlyTargets || []);
+        k.target = yrVal;
+        const def = defaultMonthTarget(k);
+        k.monthlyTargets = mtArr.map(x => isNum(x) ? +x : def);
+        if (k.target !== prevTarget || JSON.stringify(k.monthlyTargets) !== prevMt || !silent) {
+          k._updatedAt = now;
+          changed = true;
+        }
+      });
+      if (changed) {
+        computeRollups();
+        save();
+        render();
+        toast(silent ? `✅ Đã tự động lưu KPI tháng cho ${entTitle}` : `✅ Đã lưu KPI theo tháng cho ${entTitle}!`);
+      }
+      return changed;
+    };
+
     openModal(`📅 Thiết lập KPI theo tháng – ${entTitle}`, `
       <div class="field full">
         <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:10px;background:#f8fafc;padding:12px 14px;border-radius:10px;border:1px solid var(--line)">
@@ -3839,33 +4320,7 @@
       ${linkedSectionHtml}
     `, fd => {
       if (!canEdit) return true;
-      const v = Object.fromEntries(fd);
-      list.forEach(k => {
-        if (k.rollupMode && k.rollupMode !== 'manual') return;
-        const yrRaw = v[`yr_${k.id}`];
-        let yrVal = isNum(yrRaw) ? +yrRaw : k.target;
-        const mtArr = MONTHS.map((_, m) => {
-          const r = v[`mt_${k.id}_${m}`];
-          return isNum(r) ? +r : null;
-        });
-        if (!(yrVal > 0)) {
-          const valid27 = mtArr.slice(1, 13).filter(isNum);
-          if (valid27.length) {
-            yrVal = k.aggregation === 'sum'
-              ? Math.round(sum(valid27) * 100) / 100
-              : Math.round((sum(valid27) / valid27.length) * 100) / 100;
-          } else if (isNum(mtArr[0]) && mtArr[0] > 0) {
-            yrVal = k.aggregation === 'sum' ? Math.round(mtArr[0] * 12 * 100) / 100 : mtArr[0];
-          }
-        }
-        k.target = yrVal;
-        const def = defaultMonthTarget(k);
-        k.monthlyTargets = mtArr.map(x => isNum(x) ? +x : def);
-      });
-      computeRollups();
-      save();
-      render();
-      toast(`✅ Đã lưu KPI theo tháng cho ${entTitle}!`);
+      persistMonthlyForm(fd, false);
       return true;
     }, f => {
       const distRow = tr => {
@@ -3940,10 +4395,12 @@
 
       $('#modal-emp-switcher', f)?.addEventListener('change', ev => {
         const nextEid = ev.target.value;
+        if (canEdit && list.length) persistMonthlyForm(new FormData(f), true);
         monthlyKpiModal('emp', nextEid);
       });
       $('#modal-dept-switcher', f)?.addEventListener('change', ev => {
         const nextDid = ev.target.value;
+        if (canEdit && list.length) persistMonthlyForm(new FormData(f), true);
         monthlyKpiModal('dept', nextDid);
       });
     }, { xl: true, viewOnly: !canEdit || !list.length, saveText: 'Lưu KPI theo tháng' });
@@ -3960,16 +4417,20 @@
     const k = list[idx];
     if (!confirm(`Xóa KPI "${k.name}"?\nCác liên kết từ cấp dưới tới KPI này cũng sẽ được gỡ bỏ.`)) return;
     list.splice(idx, 1);
+    const delTs = Date.now();
+    markDeleted('kpis', kid, delTs);
     let cleaned = 0;
     S.depts.forEach(d => {
-      const n = d.iidLinks.length; d.iidLinks = d.iidLinks.filter(l => l.kpiId !== kid); cleaned += n - d.iidLinks.length;
-      d.kpis.forEach(x => { if (x.linkTo === kid) { x.linkTo = null; cleaned++; } });
+      const n = d.iidLinks.length; d.iidLinks = d.iidLinks.filter(l => l.kpiId !== kid);
+      if (d.iidLinks.length !== n) { cleaned += n - d.iidLinks.length; d._iidLinksUpdatedAt = delTs; }
+      d.kpis.forEach(x => { if (x.linkTo === kid) { x.linkTo = null; x._updatedAt = delTs; cleaned++; } });
     });
     S.emps.forEach(e => {
-      let n = e.iidLinks.length + e.deptLinks.length;
+      const ni = e.iidLinks.length, nd = e.deptLinks.length;
       e.iidLinks = e.iidLinks.filter(l => l.kpiId !== kid); e.deptLinks = e.deptLinks.filter(l => l.kpiId !== kid);
-      cleaned += n - e.iidLinks.length - e.deptLinks.length;
-      e.kpis.forEach(x => { if (x.linkTo === kid) { x.linkTo = null; cleaned++; } });
+      if (e.iidLinks.length !== ni) { cleaned += ni - e.iidLinks.length; e._iidLinksUpdatedAt = delTs; }
+      if (e.deptLinks.length !== nd) { cleaned += nd - e.deptLinks.length; e._deptLinksUpdatedAt = delTs; }
+      e.kpis.forEach(x => { if (x.linkTo === kid) { x.linkTo = null; x._updatedAt = delTs; cleaned++; } });
     });
     computeRollups();
     save(); render(); toast(`Đã xóa KPI${cleaned ? ` · gỡ ${cleaned} liên kết liên quan` : ''}`);
@@ -4000,6 +4461,7 @@
       <div class="weight-preview" id="wp"></div>`,
     fd => {
       d.iidLinks = readWeights(fd, 'i_');
+      d._iidLinksUpdatedAt = Date.now();
       save(); render(); toast('Đã cập nhật liên kết KPI IID');
     },
     f => {
@@ -4029,8 +4491,11 @@
       ${eDepts.length ? weightInputs('d_', allDeptKpis, e.deptLinks) : '<div class="field full muted small">Nhân sự chưa thuộc bộ phận nào.</div>'}
       <div class="weight-preview" id="wp"></div>`,
     fd => {
+      const now = Date.now();
       e.iidLinks = readWeights(fd, 'i_');
       e.deptLinks = readWeights(fd, 'd_');
+      e._iidLinksUpdatedAt = now;
+      e._deptLinksUpdatedAt = now;
       save(); render(); toast('Đã cập nhật liên kết KPI');
     },
     f => {
@@ -4064,11 +4529,12 @@
       if (!v.name.trim()) { toast('Vui lòng nhập tên bộ phận', true); return false; }
       const prevLeaderName = old ? (old.leader || '').trim() : '';
       const typedLeader = (v.leader || '').trim();
+      const now = Date.now();
       let targetDept = old;
       if (old) {
-        Object.assign(old, { name: v.name.trim(), leader: typedLeader, color: v.color || old.color });
+        Object.assign(old, { name: v.name.trim(), leader: typedLeader, color: v.color || old.color, _updatedAt: now });
       } else {
-        targetDept = { id: uid('d'), name: v.name.trim(), leader: typedLeader, color: v.color || DEPT_COLORS[0], iidLinks: [], kpis: [] };
+        targetDept = { id: uid('d'), name: v.name.trim(), leader: typedLeader, color: v.color || DEPT_COLORS[0], iidLinks: [], kpis: [], _updatedAt: now };
         S.depts.push(targetDept);
         UI.selDept = targetDept.id;
       }
@@ -4086,9 +4552,11 @@
             mu.managedDeptIds = [...mSet];
             if (!mu.deptId) mu.deptId = targetDept.id;
           }
+          mu._updatedAt = now;
           linkUserToEmp(mu);
           targetDept.managerId = mu.id;
           targetDept.leader = (!typedLeader || typedLeader === prevLeaderName) ? mu.name : typedLeader;
+          targetDept._updatedAt = now;
         }
       }
       save(); render(); toast(old ? 'Đã cập nhật bộ phận & người phụ trách' : 'Đã thêm bộ phận mới');
@@ -4141,14 +4609,15 @@
           target.deptLinks = (target.deptLinks || []).filter(l => allowedKpiIds.has(l.kpiId));
           target.kpis.forEach(k => { if (k.linkTo && !allowedKpiIds.has(k.linkTo)) k.linkTo = null; });
         }
-        Object.assign(target, { name: v.name.trim(), title: v.title.trim(), role: v.role, deptId: primaryDept, managedDeptIds });
+        const now = Date.now();
+        Object.assign(target, { name: v.name.trim(), title: v.title.trim(), role: v.role, deptId: primaryDept, managedDeptIds, _updatedAt: now });
         syncUsersFromEmp(target);
         if (UI.empFilter !== 'all' && !managedDeptIds.includes(UI.empFilter)) {
           UI.empFilter = primaryDept || 'all';
         }
         UI.selEmp = target.id;
       } else {
-        const ne = { id: uid('e'), name: v.name.trim(), title: v.title.trim(), role: v.role, deptId: primaryDept, managedDeptIds, iidLinks: [], deptLinks: [], kpis: [] };
+        const ne = { id: uid('e'), name: v.name.trim(), title: v.title.trim(), role: v.role, deptId: primaryDept, managedDeptIds, iidLinks: [], deptLinks: [], kpis: [], _updatedAt: Date.now() };
         S.emps.push(ne); UI.selEmp = ne.id;
       }
       computeRollups();
@@ -4177,7 +4646,7 @@
         S = normalize(d);
         UI.selDept = UI.selEmp = null;
         computeRollups();
-        save(); fillMonthSelect(); render(true);
+        save(true, { replace: true }); fillMonthSelect(); render(true);
         toast('Đã nhập dữ liệu JSON thành công');
       } catch (e) { toast('File JSON không hợp lệ hoặc không đúng cấu trúc KPI', true); }
     };
@@ -4296,7 +4765,7 @@
     }
     S.selectedMonths = months;
     S.currentMonth = Math.max(...months);
-    save();
+    saveUiPrefs();
     computeRollups();
     render();
     toast(`Kỳ dữ liệu: ${formatMonthsLabel(months)}`);
@@ -4337,7 +4806,7 @@
     if (!list.length) list = [0];
     S.selectedMonths = list;
     S.currentMonth = Math.max(...list);
-    save();
+    saveUiPrefs();
     computeRollups();
     render();
     toast(`Đã chọn: ${formatMonthsLabel(list)}`);
@@ -4388,7 +4857,7 @@
         S = normalize(typeof buildCleanData === 'function' ? buildCleanData() : buildSampleData());
         UI.selDept = UI.selEmp = null;
         computeRollups();
-        save(); fillMonthSelect(); render(true);
+        save(true, { replace: true }); fillMonthSelect(); render(true);
         toast('Đã làm sạch dữ liệu – Sẵn sàng chạy thử từ Tháng 12/2026!');
         break;
       }
@@ -4398,7 +4867,7 @@
         S = normalize(buildSampleData());
         UI.selDept = UI.selEmp = null;
         computeRollups();
-        save(); fillMonthSelect(); render(true);
+        save(true, { replace: true }); fillMonthSelect(); render(true);
         toast('Đã nạp lại dữ liệu demo mẫu (Kỳ đang chọn: Tháng 12/2026)');
         break;
       }
@@ -4454,6 +4923,7 @@
         if (u && confirm(`Đặt lại mật khẩu cho tài khoản "${u.name}" (${u.email}) về "password123"?`)) {
           u.password = 'password123';
           u.pwdChanged = false;
+          u._updatedAt = Date.now();
           save(); render();
           toast(`Đã đặt lại mật khẩu của ${u.name} về "password123"`);
         }
@@ -4482,8 +4952,11 @@
           break;
         }
         if (confirm(`Bạn có chắc muốn xóa tài khoản "${u.name}" (${u.email})?`)) {
+          const delTs = Date.now();
+          markDeleted('users', u.id, delTs);
           S.users = S.users.filter(x => x.id !== u.id);
           if (u.empId) {
+            markDeleted('emps', u.empId, delTs);
             S.emps = S.emps.filter(e => e.id !== u.empId);
             Object.keys(S.reviews).forEach(k => { if (k.startsWith(`emp_${u.empId}_`)) delete S.reviews[k]; });
           }
@@ -4510,6 +4983,7 @@
         if (!k) break;
         const def = defaultMonthTarget(k);
         k.monthlyTargets = Array(MONTHS.length).fill(def);
+        k._updatedAt = Date.now();
         computeRollups();
         save(); render();
         toast(`Đã chia đều MT năm (${fmt(k.target)}) sang 13 tháng cho "${k.name}": ${fmt(def)}/tháng`);
@@ -4524,6 +4998,7 @@
           k.target = k.aggregation === 'sum'
             ? Math.round(sum(vals27) * 100) / 100
             : Math.round((sum(vals27) / vals27.length) * 100) / 100;
+          k._updatedAt = Date.now();
           computeRollups();
           save(); render();
           toast(`Đã cập nhật MT năm cho "${k.name}" = ${fmt(k.target)} ${k.unit}`);
@@ -4537,6 +5012,7 @@
         const d = deptById(ds.eid); if (!d) break;
         if (S.emps.some(e => e.deptId === d.id)) { toast('Bộ phận còn nhân sự – hãy chuyển hoặc xóa nhân sự trước', true); break; }
         if (!confirm(`Xóa bộ phận "${d.name}" cùng ${d.kpis.length} KPI?`)) break;
+        markDeleted('depts', d.id, Date.now());
         S.depts = S.depts.filter(x => x !== d); UI.selDept = null;
         save(); render(); toast('Đã xóa bộ phận');
         break;
@@ -4548,6 +5024,9 @@
       case 'del-emp': {
         const e = empById(ds.eid); if (!e) break;
         if (!confirm(`Xóa nhân sự "${e.name}" (cùng tài khoản liên kết)?`)) break;
+        const delTs = Date.now();
+        markDeleted('emps', e.id, delTs);
+        S.users.forEach(u => { if (u.id !== 'u_admin' && u.role !== 'admin' && u.empId === e.id) markDeleted('users', u.id, delTs); });
         S.emps = S.emps.filter(x => x !== e);
         S.users = S.users.filter(u => u.id === 'u_admin' || u.role === 'admin' || u.empId !== e.id);
         Object.keys(S.reviews).forEach(k => { if (k.startsWith(`emp_${e.id}_`)) delete S.reviews[k]; });
@@ -4559,9 +5038,11 @@
       case 'emp-filter': UI.empFilter = ds.val; UI.selEmp = null; render(); break;
       case 'track-level': UI.trackLevel = ds.val; render(); break;
       case 'track-mode': UI.trackMode = ds.val; render(); break;
+      case 'review-mode': UI.reviewMode = ds.val === 'quarter' ? 'quarter' : 'month'; render(); break;
+      case 'review-m': UI.reviewM = +ds.val; render(); break;
       case 'review-q': UI.reviewQ = +ds.val; render(); break;
       case 'review-filter': UI.reviewFilter = ds.val; render(); break;
-      case 'review-edit': reviewModal(ds.type, ds.eid); break;
+      case 'review-edit': reviewModal(ds.type, ds.eid, ds.mode, ds.val); break;
       case 'toggle': el.parentElement.classList.toggle('open'); break;
       case 'tree-all': $$('.tree .tree-node').forEach(n => { if (n.querySelector(':scope > .tree-children')) n.classList.toggle('open', ds.val === 'open'); }); break;
       case 'goto':
@@ -4581,7 +5062,7 @@
     else if (t.id === 'month-select') {
       S.currentMonth = +t.value;
       S.selectedMonths = [S.currentMonth];
-      save(); render(); toast(`Kỳ dữ liệu: ${monthFull(S.currentMonth)}`);
+      saveUiPrefs(); render(); toast(`Kỳ dữ liệu: ${monthFull(S.currentMonth)}`);
     }
     else if (t.id === 'track-entity') { if (UI.trackLevel === 'dept') UI.trackDept = t.value; else UI.trackEmp = t.value; render(); }
     else if (t.id === 'import-file') { if (t.files[0]) importJSON(t.files[0]); t.value = ''; }
@@ -4677,4 +5158,10 @@
   // Định kỳ lấy dữ liệu mới nhất từ Server (khi không đang chỉnh sửa) để các máy luôn thấy thay đổi của nhau
   setInterval(() => { if (document.visibilityState === 'visible') syncFromServer(); }, 30000);
   window.addEventListener('focus', () => syncFromServer());
+  window.addEventListener('beforeunload', ev => {
+    if (isLoggedIn && (SYNC.pushing || isDirty())) {
+      ev.preventDefault();
+      ev.returnValue = 'Dữ liệu KPI đang được đồng bộ lên máy chủ. Vui lòng chờ 1 giây trước khi đóng trang.';
+    }
+  });
 })();

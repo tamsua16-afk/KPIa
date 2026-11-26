@@ -13,11 +13,11 @@ Hệ thống quản lý, cascade và theo dõi đánh giá KPI 2027 dành cho Kh
   - Khối IID: 5 KPI cốt lõi, tổng 100%.
   - Bộ phận: 30–70% IID, 3–5 KPI riêng (30–70%), tổng 100%.
   - Cá nhân: 20–40% IID, 30–50% Bộ phận, 20–40% riêng (tối đa 8 KPI), tổng 100%.
-  - Trần điểm KPI: 120%.
+  - Quy tắc tính điểm KPI: Tỷ lệ hoàn thành từng KPI tối đa **150%**, nhân với hệ số tỷ trọng (%) của từng KPI rồi cộng tổng thành điểm KPI Bộ phận / Cá nhân (`Σ [Tỷ lệ hoàn thành (≤ 150%) × Tỷ trọng %]`).
 - **Theo dõi thực tế & Thiết lập hàng tháng (Monthly Tracking & Target Setup)**:
   - Ba chế độ linh hoạt: **Nhập Thực tế tháng (Actual)**, **Set KPI theo tháng (Target)**, và **Song song (MT & Thực tế)**.
   - Bổ sung kỳ **Tháng 12/2026 (`T12/26`)** để chạy thử nghiệm hệ thống trước khi bước vào năm 2027.
-- **Review theo kỳ chạy thử T12/2026 & hàng quý (Q1–Q4/2027)**: Tự đánh giá, quản lý phản hồi, chốt xếp loại A/B/C/D.
+- **Review hàng tháng (T12/2026 – T12/2027) & hàng quý (Q1–Q4/2027)**: Tự đánh giá, quản lý phản hồi, so sánh với tháng/quý trước, chốt xếp loại A/B/C/D.
 - **Cây liên kết KPI (Cascade Tree)**: Trực quan hóa mối quan hệ đóng góp giữa các cấp mục tiêu.
 - **Kiểm tra nguyên tắc tự động**: Rà soát vi phạm tỷ trọng, cảnh báo KPI mồ côi hoặc vượt số lượng.
 - **Phân quyền 4 cấp (RBAC) & Bảo mật dữ liệu**:

@@ -33,14 +33,14 @@ const ROLES = {
     title: 'Nhân viên',
     level: 1,
     badge: '👤 Staff',
-    desc: 'Xem KPI cá nhân, tự nhập số liệu thực tế hàng tháng và thực hiện tự đánh giá (Self-review) theo quý.'
+    desc: 'Xem KPI cá nhân, tự nhập số liệu thực tế hàng tháng và thực hiện tự đánh giá (Self-review) hàng tháng / theo quý.'
   }
 };
 
 const RULES = {
   dept: { iid: [30, 70], dept: [30, 70], deptKpiCount: [3, 5] },
   emp: { iid: [20, 40], dept: [30, 50], own: [20, 40], maxKpi: 8 },
-  cap: 120 // % tối đa ghi nhận cho 1 KPI
+  cap: 150 // % tối đa ghi nhận cho 1 KPI (trần 150%)
 };
 
 const RATINGS = [
